@@ -1,0 +1,25 @@
+# Rust build artifacts
+/target
+Cargo.lock
+
+# Output files
+*.pdf
+*.svg
+*.dxf
+*.png
+*.jpg
+*.jpeg
+
+# Debug outputs
+debug_*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

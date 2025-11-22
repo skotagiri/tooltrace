@@ -1,0 +1,28 @@
+[package]
+name = "tooltrace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tooltrace"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+clap.workspace = true
+image.workspace = true
+imageproc.workspace = true
+# opencv.workspace = true
+# apriltag.workspace = true
+kornia-rs.workspace = true
+kornia-imgproc.workspace = true
+kornia-io.workspace = true
+nalgebra.workspace = true
+svg.workspace = true
+dxf.workspace = true
+contour_tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tooltrace-common.workspace = true

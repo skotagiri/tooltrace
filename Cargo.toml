@@ -1,0 +1,52 @@
+[workspace]
+members = [
+    "paper-gen",
+    "tooltrace",
+    "tooltrace-common",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["ToolTrace Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Image processing
+image = "0.25"
+imageproc = "0.25"
+
+# Computer vision
+# Using pure Rust alternatives to avoid C/C++ build issues on Windows
+# opencv = { version = "0.92", features = ["clang-runtime"] }
+# apriltag = { version = "0.3", features = ["nalgebra", "image"] }
+kornia-rs = "0.1"
+kornia-imgproc = "0.1"
+kornia-io = "0.1"
+
+# Linear algebra
+nalgebra = "0.33"
+
+# PDF generation
+printpdf = "0.7"
+
+# Vector export
+svg = "0.17"
+dxf = "0.6"
+
+# Contour tracing
+contour_tracing = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+# Common workspace crate
+tooltrace-common = { path = "tooltrace-common" }

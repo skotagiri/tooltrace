@@ -1,0 +1,15 @@
+[package]
+name = "tooltrace-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "tooltrace_common"
+path = "src/lib.rs"
+
+[dependencies]
+# Workspace dependencies
+serde.workspace = true
+thiserror.workspace = true

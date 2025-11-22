@@ -1,0 +1,21 @@
+[package]
+name = "paper-gen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "paper-gen"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+clap.workspace = true
+image.workspace = true
+printpdf.workspace = true
+anyhow.workspace = true
+tooltrace-common.workspace = true
+
+# Paper-gen specific
+chrono = "0.4"
