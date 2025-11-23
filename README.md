@@ -4,14 +4,15 @@ Analyze photographs of objects on specially-marked paper and generate mm-accurat
 
 ## Project Status
 
-🚧 **Under Active Development** - Phase 1 Complete
+🚧 **Under Active Development** - Phase 2 Complete
 
 Currently implemented:
 - ✓ Project infrastructure and workspace setup
 - ✓ CLI argument parsing for both tools
-- ✓ Basic PDF generator structure
-- ⏳ AprilTag marker generation (in progress)
-- ⏳ Image analysis pipeline (planned)
+- ✓ **Paper generator with real AprilTag markers**
+- ✓ **Unique tag IDs for automatic paper size detection**
+- ✓ **Calibration grid and ruler markings**
+- ⏳ Image analysis pipeline (next)
 - ⏳ Vector export (planned)
 
 ## Overview
@@ -38,10 +39,15 @@ paper-gen [OPTIONS]
 ```
 
 **Features:**
-- Supports A4 (210×297mm), US Letter (8.5×11in), and A3 (297×420mm)
-- AprilTag 36h11 markers in corners for perspective detection
-- 10mm calibration grid with 1mm subdivisions
-- Precise ruler markings for verification
+- ✓ Supports A4 (210×297mm), US Letter (8.5×11in), and A3 (297×420mm)
+- ✓ AprilTag 36h11 markers in corners for perspective detection
+- ✓ Unique tag IDs per paper size for automatic detection:
+  - A4: Tag IDs 0-3
+  - US Letter: Tag IDs 4-7
+  - A3: Tag IDs 8-11
+- ✓ 10mm calibration grid with 1mm subdivisions
+- ✓ Precise ruler markings for verification (1mm, 5mm, 10mm ticks)
+- ✓ High-quality tag generation (160x160px embedded images)
 
 ### 2. `tooltrace` - Object Tracing Tool
 
@@ -169,8 +175,14 @@ Binaries will be in `target/release/`:
 
 See [TODO.md](TODO.md) for detailed task list and [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) for development history.
 
-**Current Phase:** Phase 1 ✓ Complete
-**Next Phase:** Phase 2 - Implement AprilTag generation and PDF rendering
+**Current Phase:** Phase 2 ✓ Complete - Paper generator fully functional!
+**Next Phase:** Phase 3 - Implement AprilTag detection in tooltrace CLI
+
+### Recent Milestones
+- ✅ Custom AprilTag 36h11 generator (no existing Rust library available)
+- ✅ Paper-size-specific tag ID system for automatic detection
+- ✅ PDF generation with embedded AprilTag images
+- ✅ All three paper sizes tested and working
 
 ## License
 

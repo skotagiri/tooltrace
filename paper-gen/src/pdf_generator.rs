@@ -1,8 +1,8 @@
 use anyhow::Result;
 use printpdf::*;
-use printpdf::path::{PaintMode, WindingOrder};
 use tooltrace_common::{PaperSize, AprilTagConfig};
 use crate::marker_placement::calculate_marker_positions;
+use crate::apriltag_generator::generate_apriltag;
 
 pub struct PdfGenerator {
     paper_size: PaperSize,
@@ -11,8 +11,8 @@ pub struct PdfGenerator {
 
 impl PdfGenerator {
     pub fn new(paper_size: PaperSize, tag_size_mm: f64) -> Self {
-        let mut tag_config = AprilTagConfig::default();
-        tag_config.size_mm = tag_size_mm;
+        // Get tag configuration specific to this paper size
+        let tag_config = AprilTagConfig::for_paper_size(paper_size, tag_size_mm);
 
         Self {
             paper_size,
@@ -43,8 +43,8 @@ impl PdfGenerator {
         // Draw ruler markings
         self.draw_rulers(&layer)?;
 
-        // Add AprilTag placeholders (will add actual tags later)
-        self.draw_tag_placeholders(&layer)?;
+        // Add AprilTag images
+        self.embed_apriltags(&layer, &doc)?;
 
         // Save PDF
         doc.save(&mut std::io::BufWriter::new(
@@ -56,16 +56,17 @@ impl PdfGenerator {
 
     fn add_title(&self, layer: &PdfLayerReference, doc: &PdfDocumentReference) -> Result<()> {
         let (width_mm, height_mm) = self.paper_size.dimensions_mm();
+        let printable_margin = 15.0; // Match the tag margin
 
-        // Add title at top center
+        // Add title at top center, inside printable area
         let font = doc.add_builtin_font(BuiltinFont::Helvetica)?;
         let title = format!("ToolTrace Calibration Paper - {}", self.paper_size);
 
         layer.use_text(
             title,
-            12.0,
-            Mm((width_mm / 2.0 - 40.0) as f32),
-            Mm((height_mm - 5.0) as f32),
+            10.0, // Smaller font
+            Mm((width_mm / 2.0 - 35.0) as f32),
+            Mm((height_mm - printable_margin - 3.0) as f32), // 3mm below top printable edge
             &font
         );
 
@@ -76,7 +77,7 @@ impl PdfGenerator {
         let (width_mm, height_mm) = self.paper_size.dimensions_mm();
         let (width_mm, height_mm) = (width_mm as f32, height_mm as f32);
         let grid_spacing = 10.0_f32; // 10mm major grid
-        let margin = 20.0_f32; // Keep grid away from edges
+        let margin = 25.0_f32; // 15mm printable + 10mm extra = 25mm from edges
 
         // Set line style for grid
         layer.set_outline_thickness(0.2);
@@ -115,14 +116,18 @@ impl PdfGenerator {
 
     fn draw_rulers(&self, layer: &PdfLayerReference) -> Result<()> {
         let (width_mm, height_mm) = self.paper_size.dimensions_mm();
-        let margin = 5.0_f32;
+        let printable_margin = 15.0; // Start rulers inside printable area
+        let ruler_offset = 17.0_f32; // Position ruler 2mm inside printable margin
 
         // Set line style for rulers
         layer.set_outline_thickness(0.5);
         layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
 
-        // Bottom ruler (horizontal)
-        for i in 0..=(width_mm as i32) {
+        // Bottom ruler (horizontal) - only draw in printable area
+        let start_x = printable_margin as i32;
+        let end_x = (width_mm - printable_margin) as i32;
+
+        for i in start_x..=end_x {
             let x = i as f32;
             let tick_height = if i % 10 == 0 {
                 3.0_f32 // Major tick every 10mm
@@ -134,16 +139,19 @@ impl PdfGenerator {
 
             let line = Line {
                 points: vec![
-                    (Point::new(Mm(x), Mm(margin)), false),
-                    (Point::new(Mm(x), Mm(margin + tick_height)), false),
+                    (Point::new(Mm(x), Mm(ruler_offset)), false),
+                    (Point::new(Mm(x), Mm(ruler_offset + tick_height)), false),
                 ],
                 is_closed: false,
             };
             layer.add_line(line);
         }
 
-        // Left ruler (vertical)
-        for i in 0..=(height_mm as i32) {
+        // Left ruler (vertical) - only draw in printable area
+        let start_y = printable_margin as i32;
+        let end_y = (height_mm - printable_margin) as i32;
+
+        for i in start_y..=end_y {
             let y = i as f32;
             let tick_width = if i % 10 == 0 {
                 3.0_f32
@@ -155,8 +163,8 @@ impl PdfGenerator {
 
             let line = Line {
                 points: vec![
-                    (Point::new(Mm(margin), Mm(y)), false),
-                    (Point::new(Mm(margin + tick_width), Mm(y)), false),
+                    (Point::new(Mm(ruler_offset), Mm(y)), false),
+                    (Point::new(Mm(ruler_offset + tick_width), Mm(y)), false),
                 ],
                 is_closed: false,
             };
@@ -166,33 +174,63 @@ impl PdfGenerator {
         Ok(())
     }
 
-    fn draw_tag_placeholders(&self, layer: &PdfLayerReference) -> Result<()> {
+    fn embed_apriltags(&self, layer: &PdfLayerReference, _doc: &PdfDocumentReference) -> Result<()> {
         let positions = calculate_marker_positions(self.paper_size, &self.tag_config);
-        let tag_size = self.tag_config.size_mm as f32;
+        let tag_size_mm = self.tag_config.size_mm as f32;
 
-        // Draw black squares as placeholders for AprilTags
-        layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-        layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-        layer.set_outline_thickness(1.0);
+        // Generate AprilTag images for each corner
+        // Use 20 pixels per bit for good quality
+        let pixels_per_bit = 20;
 
-        for (_i, &(x, y)) in positions.iter().enumerate() {
+        for (i, &(x, y)) in positions.iter().enumerate() {
+            let tag_id = self.tag_config.corner_ids[i];
+
+            // Generate the AprilTag image
+            let tag_img = generate_apriltag(tag_id, pixels_per_bit)?;
+
+            // Save to disk for debugging
+            tag_img.save(format!("debug_apriltag_{}.png", tag_id))?;
+
+            // Convert to printpdf's image format (v0.24)
+            // Convert our image (v0.25) to DynamicImage v0.24
+            let width = tag_img.width();
+            let height = tag_img.height();
+            let raw_bytes = tag_img.into_raw();
+
+            // Create image using printpdf's image_crate (v0.24)
+            let img_v024 = printpdf::image_crate::GrayImage::from_raw(width, height, raw_bytes)
+                .ok_or_else(|| anyhow::anyhow!("Failed to create image"))?;
+            let dynamic_img = printpdf::image_crate::DynamicImage::ImageLuma8(img_v024);
+
+            // Create PDF Image from DynamicImage
+            let image = Image::from_dynamic_image(&dynamic_img);
+
+            // Calculate position and size for the image
             let (x, y) = (x as f32, y as f32);
-            // Draw outer black square
-            let rect = Polygon {
-                rings: vec![vec![
-                    (Point::new(Mm(x), Mm(y)), false),
-                    (Point::new(Mm(x + tag_size), Mm(y)), false),
-                    (Point::new(Mm(x + tag_size), Mm(y + tag_size)), false),
-                    (Point::new(Mm(x), Mm(y + tag_size)), false),
-                ]],
-                mode: PaintMode::FillStroke,
-                winding_order: WindingOrder::NonZero,
-            };
-            layer.add_polygon(rect);
 
-            // Add ID label below tag
-            // Note: In a real implementation, we would draw the actual AprilTag pattern here
-            // For now, just marking position
+            // Calculate DPI so that the image renders at exactly tag_size_mm
+            // Image is (pixels_per_bit * 8) pixels, we want it to be tag_size_mm
+            let image_size_px = (pixels_per_bit * 8) as f32;
+            let tag_size_inches = tag_size_mm / 25.4; // convert mm to inches
+            let base_dpi = image_size_px / tag_size_inches;
+
+            // Apply empirical correction factor based on physical measurements
+            // Measured: 47.16mm, Expected: 50mm
+            // DPI is inversely proportional to size: lower DPI = larger image
+            // correction = 47.16/50 = 0.9432 (reduce DPI to increase size)
+            let correction_factor = 0.9432_f32;
+            let required_dpi = base_dpi * correction_factor;
+
+            // Add image to PDF
+            image.add_to_layer(
+                layer.clone(),
+                ImageTransform {
+                    translate_x: Some(Mm(x)),
+                    translate_y: Some(Mm(y)),
+                    dpi: Some(required_dpi),
+                    ..Default::default()
+                },
+            );
         }
 
         Ok(())

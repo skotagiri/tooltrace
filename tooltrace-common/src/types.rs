@@ -52,13 +52,52 @@ pub struct AprilTagConfig {
     pub corner_ids: [u32; 4],
 }
 
-impl Default for AprilTagConfig {
-    fn default() -> Self {
+impl AprilTagConfig {
+    /// Get tag configuration for a specific paper size
+    ///
+    /// Tag ID scheme:
+    /// - A4: IDs 0-3 (top-left, top-right, bottom-right, bottom-left)
+    /// - Letter: IDs 4-7
+    /// - A3: IDs 8-11
+    ///
+    /// This allows automatic paper size detection from detected tags
+    pub fn for_paper_size(paper_size: PaperSize, tag_size_mm: f64) -> Self {
+        let corner_ids = match paper_size {
+            PaperSize::A4 => [0, 1, 2, 3],
+            PaperSize::Letter => [4, 5, 6, 7],
+            PaperSize::A3 => [8, 9, 10, 11],
+        };
+
         Self {
             family: TagFamily::Tag36h11,
-            size_mm: 50.0, // 50mm tag size
-            corner_ids: [0, 1, 2, 3],
+            size_mm: tag_size_mm,
+            corner_ids,
         }
+    }
+
+    /// Detect paper size from corner tag IDs
+    /// Returns Some(PaperSize) if all 4 tags match a known pattern
+    pub fn detect_paper_size(tag_ids: &[u32]) -> Option<PaperSize> {
+        if tag_ids.len() != 4 {
+            return None;
+        }
+
+        // Check if all IDs are in the same range
+        let min_id = *tag_ids.iter().min()?;
+        let max_id = *tag_ids.iter().max()?;
+
+        match (min_id, max_id) {
+            (0, 3) => Some(PaperSize::A4),
+            (4, 7) => Some(PaperSize::Letter),
+            (8, 11) => Some(PaperSize::A3),
+            _ => None,
+        }
+    }
+}
+
+impl Default for AprilTagConfig {
+    fn default() -> Self {
+        Self::for_paper_size(PaperSize::A4, 50.0)
     }
 }
 

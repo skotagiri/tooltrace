@@ -32,7 +32,7 @@ kornia-io = "0.1"
 nalgebra = "0.33"
 
 # PDF generation
-printpdf = "0.7"
+printpdf = { version = "0.7", features = ["embedded_images"] }
 
 # Vector export
 svg = "0.17"

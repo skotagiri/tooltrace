@@ -4,6 +4,72 @@ All implementation milestones in reverse chronological order.
 
 ---
 
+## 2025-11-22: Phase 2 Complete - AprilTag Generation & PDF Rendering
+
+### AprilTag Generator Implemented
+Created a custom AprilTag 36h11 generator from scratch since no Rust generation library exists:
+- **Module:** `paper-gen/src/apriltag_generator.rs`
+- **Supported IDs:** 0-11 (covers all 3 paper sizes)
+- **Structure:** 8x8 grid (outer black border + inner white border + 6x6 data bits)
+- **Quality:** 20 pixels per bit = 160x160px images
+
+### Paper Size Detection System
+Implemented unique tag ID scheme for automatic paper size detection:
+- **A4:** AprilTag IDs 0-3 (top-left, top-right, bottom-right, bottom-left)
+- **US Letter:** IDs 4-7
+- **A3:** IDs 8-11
+
+This allows the tooltrace analyzer to:
+1. Detect which paper size was used from the tag IDs
+2. Automatically determine correct pixel-to-mm calibration
+3. Validate orientation (all 4 corners must have matching paper size IDs)
+
+### PDF Generator Enhancements
+- **Real AprilTags:** Replaced black placeholder squares with actual AprilTag images
+- **Image Embedding:** Successfully embedded generated PNG images into PDF
+- **Version Compatibility:** Resolved image crate version mismatch (0.24 vs 0.25)
+- **Tag Placement:** Correctly positioned tags at 15mm margins in all corners
+
+### Technical Solutions
+**Challenge:** No existing Rust crate for AprilTag generation
+**Solution:** Implemented custom generator with hardcoded 36h11 bit patterns
+
+**Challenge:** Image crate version mismatch (printpdf uses 0.24, we use 0.25)
+**Solution:** Convert image 0.25 → raw bytes → image 0.24 → DynamicImage
+
+**Challenge:** Automatic paper size detection
+**Solution:** Unique tag ID ranges per paper size in AprilTagConfig
+
+### Build & Test Results
+```bash
+✓ cargo build --bin paper-gen (compiles successfully)
+✓ Generated test_a4.pdf (127KB, tag IDs 0-3)
+✓ Generated test_letter.pdf (126KB, tag IDs 4-7)
+✓ Generated test_a3.pdf (137KB, tag IDs 8-11)
+```
+
+### Files Modified/Created
+**New Files:**
+- `paper-gen/src/apriltag_generator.rs` - AprilTag generation with bit patterns
+
+**Modified Files:**
+- `tooltrace-common/src/types.rs` - Added `AprilTagConfig::for_paper_size()` and `detect_paper_size()`
+- `paper-gen/src/pdf_generator.rs` - Replaced placeholders with real tag embedding
+- `paper-gen/src/main.rs` - Added apriltag_generator module
+- `Cargo.toml` - Enabled `embedded_images` feature for printpdf
+
+### Code Quality
+- ✓ All tests pass in apriltag_generator module
+- ✓ No compiler errors, only expected unused function warnings in tooltrace stubs
+- ✓ PDFs generate in ~0.3-0.4 seconds
+
+### Phase 2 Status: ✓ COMPLETE
+Paper generator is fully functional! Can generate calibration papers for all 3 sizes with real AprilTag markers.
+
+**Ready for Phase 3:** Implement tooltrace image analysis and tag detection
+
+---
+
 ## 2025-11-22: Phase 1 Complete - Project Infrastructure
 
 ### Workspace Setup Completed

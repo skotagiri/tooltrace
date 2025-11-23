@@ -5,6 +5,7 @@ use tooltrace_common::PaperSize;
 mod paper_sizes;
 mod pdf_generator;
 mod marker_placement;
+mod apriltag_generator;
 
 use pdf_generator::PdfGenerator;
 
