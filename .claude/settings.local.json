@@ -17,7 +17,11 @@
       "Bash(cargo test:*)",
       "Bash(for i in 0 1 2 3 4 5)",
       "Bash(do echo \"=== Testing tag $i ===\")",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(timeout 150 cargo run:*)",
+      "Bash(curl:*)",
+      "Bash(timeout 120 cargo run:*)",
+      "Bash(\"D:\\Repo\\tooltrace\\IMPLEMENTATION_LOG.md\")"
     ],
     "deny": [],
     "ask": []

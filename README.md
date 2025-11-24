@@ -173,7 +173,7 @@ Binaries will be in `target/release/`:
 
 ## Implementation Progress
 
-See [TODO.md](TODO.md) for detailed task list and [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) for development history.
+See [TODO.md](TODO.md) for detailed task list and [IMPLEMENTATION_LOG.md](OLD_IMPLEMENTATION_LOG.md) for development history.
 
 **Current Phase:** Phase 2 ✓ Complete - Paper generator fully functional!
 **Next Phase:** Phase 3 - Implement AprilTag detection in tooltrace CLI

@@ -82,12 +82,36 @@ fn main() -> Result<()> {
         println!("  - ID {}: center at ({:.1}, {:.1})", det.id, det.center.0, det.center.1);
     }
 
-    // TODO: Step 2: Calculate perspective transform
-    // TODO: Step 3: Segment object
-    // TODO: Step 4: Trace contour
-    // TODO: Step 5: Export to vector format(s)
+    // Step 2: Calculate perspective transform
+    println!("\nStep 2: Calculating calibration and perspective transform...");
+    let input_img = image::open(&args.input)?.to_rgb8();
+    let debug_prefix = if args.debug { Some(args.output.as_str()) } else { None };
+    let calibration = calibration::calculate_calibration(&detections, args.tag_size, &input_img, debug_prefix)?;
 
-    println!("\nRemaining processing steps not yet implemented.");
+    // Save rotated and cropped image if debug mode
+    if args.debug {
+        if let Some(ref cropped) = calibration.rotated_image {
+            let cropped_path = format!("{}_cropped.jpg", args.output);
+            cropped.save(&cropped_path)?;
+            println!("Saved cropped image to: {}", cropped_path);
+        }
+    }
+
+    // Step 3: Apply perspective correction to flatten the paper
+    println!("\nStep 3: Applying perspective correction...");
+    let source_for_correction = calibration.rotated_image.as_ref().unwrap_or(&input_img);
+    let flattened = calibration::apply_perspective_correction(source_for_correction, &calibration)?;
+
+    // Save the flattened image
+    let flattened_path = format!("{}_flattened.jpg", args.output);
+    flattened.save(&flattened_path)?;
+    println!("Saved flattened image to: {}", flattened_path);
+
+    // TODO: Step 4: Segment object
+    // TODO: Step 5: Trace contour
+    // TODO: Step 6: Export to vector format(s)
+
+    println!("\nRemaining processing steps (segmentation, tracing, export) not yet implemented.");
 
     Ok(())
 }

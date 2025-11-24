@@ -6,7 +6,8 @@ use kornia_apriltag::{AprilTagDecoder, DecodeTagsConfig};
 use kornia_apriltag::family::TagFamilyKind;
 use kornia_image::{Image, ImageSize};
 use image::{GenericImageView, Rgb, RgbImage};
-use imageproc::drawing::{draw_line_segment_mut, draw_filled_circle_mut};
+use imageproc::drawing::{draw_line_segment_mut, draw_filled_circle_mut, draw_text_mut};
+use ab_glyph::{FontRef, PxScale};
 
 pub struct TagDetection {
     pub id: u32,
@@ -24,17 +25,26 @@ pub fn detect_apriltags(image_path: &str, debug_output: Option<&str>) -> Result<
     let (orig_width, orig_height) = img_rgb.dimensions();
     println!("Loaded image: {}x{}", orig_width, orig_height);
 
+    detect_apriltags_from_image(&img_rgb.to_rgb8(), debug_output)
+}
+
+/// Detect AprilTags from an in-memory image
+pub fn detect_apriltags_from_image(img_rgb: &RgbImage, debug_output: Option<&str>) -> Result<Vec<TagDetection>> {
+    let (orig_width, orig_height) = img_rgb.dimensions();
+    println!("Processing image: {}x{}", orig_width, orig_height);
+
     // Downsample large images for AprilTag detection to reduce memory usage
     // AprilTags are robust and don't need full resolution
     const MAX_DIMENSION: u32 = 1920;
+    let img_rgb_dynamic = image::DynamicImage::ImageRgb8(img_rgb.clone());
     let (img_rgb_resized, scale_factor) = if orig_width > MAX_DIMENSION || orig_height > MAX_DIMENSION {
         let scale = (MAX_DIMENSION as f64 / orig_width.max(orig_height) as f64) as f32;
         let new_width = (orig_width as f32 * scale) as u32;
         let new_height = (orig_height as f32 * scale) as u32;
         println!("Downsampling to {}x{} for detection (scale: {:.2})", new_width, new_height, scale);
-        (img_rgb.resize(new_width, new_height, image::imageops::FilterType::Lanczos3), scale as f64)
+        (img_rgb_dynamic.resize(new_width, new_height, image::imageops::FilterType::Lanczos3), scale as f64)
     } else {
-        (img_rgb.clone(), 1.0)
+        (img_rgb_dynamic.clone(), 1.0)
     };
 
     let (width, height) = (img_rgb_resized.width(), img_rgb_resized.height());
@@ -100,7 +110,7 @@ pub fn detect_apriltags(image_path: &str, debug_output: Option<&str>) -> Result<
 
     // Save debug visualization if requested
     if let Some(debug_path) = debug_output {
-        save_debug_image(&img_rgb.to_rgb8(), &results, debug_path)?;
+        save_debug_image(img_rgb, &results, debug_path)?;
     }
 
     Ok(results)
@@ -112,6 +122,13 @@ fn save_debug_image(img: &RgbImage, detections: &[TagDetection], output_path: &s
     let rect_color = Rgb([0u8, 255u8, 0u8]); // Green rectangles
     let corner_color = Rgb([255u8, 0u8, 0u8]); // Red corners
     let center_color = Rgb([0u8, 0u8, 255u8]); // Blue center
+    let text_color = Rgb([255u8, 255u8, 0u8]); // Yellow text
+
+    // Use embedded Noto Sans font from ab_glyph
+    let font = FontRef::try_from_slice(include_bytes!("../../fonts/NotoSans-Regular.ttf"))
+        .context("Failed to load font")?;
+
+    let scale = PxScale::from(40.0); // Font size
 
     for det in detections {
         // Draw lines connecting the corners to form the quad
@@ -139,6 +156,12 @@ fn save_debug_image(img: &RgbImage, detections: &[TagDetection], output_path: &s
             12,
             center_color
         );
+
+        // Draw tag ID as text near the center
+        let text = format!("ID {}", det.id);
+        let text_x = (det.center.0 as i32) + 20; // Offset to the right
+        let text_y = (det.center.1 as i32) - 20; // Offset up
+        draw_text_mut(&mut debug_img, text_color, text_x, text_y, scale, &font, &text);
 
         println!("  Annotated Tag ID {} at ({:.1}, {:.1})", det.id, det.center.0, det.center.1);
     }

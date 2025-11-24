@@ -27,4 +27,5 @@ dxf.workspace = true
 contour_tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+ab_glyph.workspace = true
 tooltrace-common.workspace = true

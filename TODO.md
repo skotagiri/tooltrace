@@ -1,28 +1,37 @@
 # ToolTrace TODO
 
-## Phase 1: Project Structure Setup
-- [ ] Create workspace with two binary crates: `paper-gen` and `tooltrace`
-- [ ] Set up shared library crate `tooltrace-common` for common types and utilities
-- [ ] Configure Cargo.toml with all dependencies
-- [ ] Add .gitignore entries for outputs (PDFs, images, SVGs, DXFs)
-- [ ] Create TODO.md and IMPLEMENTATION_LOG.md for tracking
+## Current Status
+**Last Updated:** 2025-11-23
 
-## Phase 2: Paper Generator (`paper-gen`)
-- [ ] Implement paper size definitions (A4, Letter, A3) with mm dimensions
-- [ ] Download/generate AprilTag 36h11 family images (IDs 0-3 for corners)
-- [ ] Create PDF layout engine with precise positioning
-- [ ] Add calibration grid rendering (10mm squares, 1mm subdivisions)
-- [ ] Add ruler markings along edges
-- [ ] Implement CLI for paper size selection
-- [ ] Test print accuracy with real measurements
+**Latest Update:** Perspective correction is now working correctly! Implemented two-step approach: rotate image first, rerun tag detection on rotated image, then use accurate positions for cropping and homography calculation. All debug images are being saved properly.
 
-## Phase 3: CLI Tool - Core Detection (`tooltrace`)
-- [ ] Implement image loading and basic validation
-- [ ] Integrate AprilTag detection to find 4 corner markers
-- [ ] Calculate homography matrix from detected markers
-- [ ] Implement perspective correction/warping
-- [ ] Calculate pixel-to-mm scale factor using known tag size
-- [ ] Add debug mode to visualize detected markers
+## Phase 1: Project Structure Setup ✓ COMPLETE
+- [x] Create workspace with two binary crates: `paper-gen` and `tooltrace`
+- [x] Set up shared library crate `tooltrace-common` for common types and utilities
+- [x] Configure Cargo.toml with all dependencies
+- [x] Add .gitignore entries for outputs (PDFs, images, SVGs, DXFs)
+- [x] Create TODO.md and IMPLEMENTATION_LOG.md for tracking
+
+## Phase 2: Paper Generator (`paper-gen`) ✓ COMPLETE
+- [x] Implement paper size definitions (A4, Letter, A3) with mm dimensions
+- [x] Download/generate AprilTag 36h11 family images (IDs 0-3 for corners)
+- [x] Create PDF layout engine with precise positioning
+- [x] Add calibration grid rendering (10mm squares, 1mm subdivisions)
+- [x] Add ruler markings along edges
+- [x] Implement CLI for paper size selection
+- [x] Test print accuracy with real measurements - Now generating valid PDFs
+
+## Phase 3: CLI Tool - Core Detection (`tooltrace`) ✓ COMPLETE
+- [x] Implement image loading and basic validation
+- [x] Integrate AprilTag detection to find 4 corner markers
+- [x] Calculate rotation angle from detected markers
+- [x] Rotate image to make paper upright
+- [x] Rerun tag detection on rotated image for accurate positions
+- [x] Calculate homography matrix from detected markers
+- [x] Implement perspective correction/warping - **NOW WORKING CORRECTLY**
+- [x] Calculate pixel-to-mm scale factor using known tag size
+- [x] Add debug mode to visualize detected markers
+- [x] Save intermediate debug images (rotated, rotated_detection, cropped, flattened)
 
 ## Phase 4: CLI Tool - Object Segmentation
 - [ ] Implement background subtraction using paper area
