@@ -4,6 +4,55 @@ All implementation milestones in reverse chronological order.
 
 ---
 
+## 2025-11-23: CRITICAL FIX - PDF Y-Axis Coordinate System Inversion
+
+### Bug Discovered
+PDF AprilTags were rendering **vertically flipped** compared to the PNG debug images due to coordinate system mismatch.
+
+### Root Cause
+**Coordinate System Differences:**
+- **PNG (apriltag_generator.rs):** Origin (0,0) at **TOP-LEFT**, Y increases **downward**
+  - `grid_y=0` → top of tag
+  - `grid_y=9` → bottom of tag
+
+- **PDF (pdf_generator.rs):** Origin (0,0) at **BOTTOM-LEFT** (standard PDF), Y increases **upward**
+  - `grid_y=0` → bottom of tag (WRONG!)
+  - `grid_y=9` → top of tag (WRONG!)
+
+**File:** `paper-gen/src/pdf_generator.rs:211`
+
+**Incorrect code:**
+```rust
+let cell_y = y_mm + (grid_y as f32 * cell_size_mm);
+```
+
+This caused grid_y=0 to render at the bottom of the tag in PDF coordinates, while the PNG generator has grid_y=0 at the top.
+
+### Solution Implemented
+Added Y-axis flip to match PNG orientation:
+
+```rust
+let cell_y = y_mm + ((grid_size - 1 - grid_y) as f32 * cell_size_mm);
+```
+
+This ensures:
+- `grid_y=0` → renders at `y_mm + 9*cell_size_mm` (top of tag in PDF)
+- `grid_y=9` → renders at `y_mm + 0*cell_size_mm` (bottom of tag in PDF)
+
+### Verification Method
+Compared with `test_png_generator.rs` (confirmed correct reference implementation):
+- PNG generator uses `img.put_pixel(img_x, img_y, color)` with standard image coordinates
+- PDF must flip Y to compensate for bottom-left origin
+
+### Impact
+- **Before:** AprilTags in PDF were upside-down, causing detection failures
+- **After:** PDF tags match PNG orientation exactly, ensuring correct detection
+
+### Files Modified
+- `paper-gen/src/pdf_generator.rs:213` - Added Y-axis flip in `draw_apriltag_vector()`
+
+---
+
 ## 2025-11-23: CRITICAL FIX - AprilTag Bit Reversal Bug
 
 ### Bugs Discovered
@@ -86,6 +135,13 @@ Tested all generated tags with tooltrace AprilTag detector:
 | 5 | ✓ 5 | 0 | 204.72 | Perfect |
 
 **100% detection success rate with zero bit errors!** This confirms the implementation is now fully correct and compatible with all standard AprilTag 36h11 detectors.
+
+### Applied Fixes to PDF Generator
+The PDF generator (`pdf_generator.rs`) had the same two bugs in `get_bit_value_for_vector()`:
+- **Line 279:** Fixed Y-axis mapping: `let bit_y = y - 1;` (was incorrectly `7 - (y - 1)`)
+- **Line 297:** Fixed bit reversal: `let bit = (bit_pattern >> (35 - bit_index)) & 1;` (was incorrectly `>> bit_index`)
+
+Regenerated `test_calibration_fixed.pdf` with corrected AprilTag patterns. Both PNG and PDF generators now produce identical, specification-compliant tags.
 
 ### Created Visualization
 Generated `apriltag_bit_mapping.png` showing the scrambled bit layout in the 6x6 data grid, with color-coded bit ranges to illustrate the non-sequential pattern.

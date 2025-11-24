@@ -20,7 +20,7 @@ use std::path::Path;
 /// - A4 paper: IDs 0-3 (top-left, top-right, bottom-right, bottom-left)
 /// - Letter paper: IDs 4-7
 /// - A3 paper: IDs 8-11
-const TAG_36H11_PATTERNS: &[(u32, u64)] = &[
+pub const TAG_36H11_PATTERNS: &[(u32, u64)] = &[
     // (ID, bit_pattern)
     // Bit patterns from the official AprilTag 36h11 family (from kornia-apriltag library)
     // A4 paper tags
@@ -100,16 +100,31 @@ pub fn generate_and_save_apriltag(tag_id: u32, pixels_per_bit: u32, output_path:
     Ok(())
 }
 
+/// Get the bit pattern for a given AprilTag ID
+///
+/// # Arguments
+/// * `tag_id` - The AprilTag ID (0-11 supported)
+///
+/// # Returns
+/// The 64-bit pattern for this tag, or an error if the ID is not found
+pub fn get_tag_pattern(tag_id: u32) -> Result<u64> {
+    TAG_36H11_PATTERNS
+        .iter()
+        .find(|(id, _)| *id == tag_id)
+        .map(|(_, pattern)| *pattern)
+        .ok_or_else(|| anyhow::anyhow!("Tag ID {} not found (only 0-11 supported)", tag_id))
+}
+
 /// Official AprilTag 36h11 bit position mapping from the reference C implementation
 /// Maps bit index to (x, y) coordinates in the 6x6 data region
-const BIT_X: [u32; 36] = [
+pub const BIT_X: [u32; 36] = [
     1, 2, 3, 4, 5, 2, 3, 4, 3, 6,  // bits 0-9
     6, 6, 6, 6, 5, 5, 5, 4, 6, 5,  // bits 10-19
     4, 3, 2, 5, 4, 3, 4, 1, 1, 1,  // bits 20-29
     1, 1, 2, 2, 2, 3,               // bits 30-35
 ];
 
-const BIT_Y: [u32; 36] = [
+pub const BIT_Y: [u32; 36] = [
     1, 1, 1, 1, 1, 2, 2, 2, 3, 1,  // bits 0-9
     2, 3, 4, 5, 2, 3, 4, 3, 6, 6,  // bits 10-19
     6, 6, 6, 5, 5, 5, 4, 6, 5, 4,  // bits 20-29
@@ -118,7 +133,12 @@ const BIT_Y: [u32; 36] = [
 
 /// Get the bit value at position (x, y) in the 10x10 grid
 /// Returns true for black, false for white
-fn get_bit_value(x: u32, y: u32, bit_pattern: u64) -> bool {
+///
+/// # Arguments
+/// * `x` - X coordinate in 10x10 grid (0-9)
+/// * `y` - Y coordinate in 10x10 grid (0-9)
+/// * `bit_pattern` - The 64-bit codeword for the tag
+pub fn get_bit_value(x: u32, y: u32, bit_pattern: u64) -> bool {
     // Outer WHITE border (row 0, row 9, col 0, col 9)
     if x == 0 || x == 9 || y == 0 || y == 9 {
         return false;  // White
