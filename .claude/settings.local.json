@@ -11,7 +11,13 @@
       "Bash(cargo build:*)",
       "Bash(cat:*)",
       "Bash(python3:*)",
-      "Bash(identify:*)"
+      "Bash(identify:*)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(cargo test:*)",
+      "Bash(for i in 0 1 2 3 4 5)",
+      "Bash(do echo \"=== Testing tag $i ===\")",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []

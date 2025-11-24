@@ -19,3 +19,5 @@ tooltrace-common.workspace = true
 
 # Paper-gen specific
 chrono = "0.4"
+imageproc = "0.25"
+ab_glyph = "0.2"
