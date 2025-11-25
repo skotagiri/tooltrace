@@ -1,24 +1,68 @@
 // Camera calibration and perspective correction module
 // Implements perspective transformation using nalgebra for homography calculation
+// Uses kornia-rs for image warping
 
 use anyhow::{Context, Result, bail};
-use nalgebra::{Matrix3, Vector3, DMatrix, SVD};
-use image::{RgbImage, Rgb, imageops};
-use imageproc::drawing::{draw_line_segment_mut, draw_filled_circle_mut, draw_hollow_circle_mut, draw_text_mut};
+use nalgebra::{Matrix3, Vector3};
+use image::{RgbImage, Rgb};
+use imageproc::drawing::{draw_line_segment_mut, draw_filled_circle_mut, draw_text_mut};
 use ab_glyph::{FontRef, PxScale};
 use tooltrace_common::PaperSize;
 use crate::detection::TagDetection;
-use std::f64::consts::PI;
+
+// Kornia imports for warping
+use kornia_image::{Image as KorniaImage, ImageSize};
+use kornia_imgproc::warp::warp_perspective;
+use kornia_imgproc::interpolation::InterpolationMode;
+use kornia_image::allocator::CpuAllocator;
+
+// Homography computation
+use homography::{HomographyComputation, geo::Point};
 
 pub struct CameraCalibration {
-    pub homography: Matrix3<f64>,
     pub inverse_homography: Matrix3<f64>,
-    pub pixel_to_mm_scale: f64,
-    pub paper_size: PaperSize,
     pub output_width: u32,
     pub output_height: u32,
-    pub rotation_angle: f64,
     pub rotated_image: Option<RgbImage>,
+}
+
+/// Convert image::RgbImage to kornia::Image<f32, 3>
+fn rgb_to_kornia(img: &RgbImage) -> Result<KorniaImage<f32, 3, CpuAllocator>> {
+    let (width, height) = img.dimensions();
+    let size = ImageSize {
+        width: width as usize,
+        height: height as usize,
+    };
+
+    // Convert u8 pixels to f32 (normalized to 0.0-1.0)
+    let mut data = Vec::with_capacity((width * height * 3) as usize);
+    for pixel in img.pixels() {
+        data.push(pixel[0] as f32 / 255.0);
+        data.push(pixel[1] as f32 / 255.0);
+        data.push(pixel[2] as f32 / 255.0);
+    }
+
+    KorniaImage::new(size, data, CpuAllocator).context("Failed to create Kornia image")
+}
+
+/// Convert kornia::Image<f32, 3> back to image::RgbImage
+fn kornia_to_rgb(img: &KorniaImage<f32, 3, CpuAllocator>) -> Result<RgbImage> {
+    let width = img.cols() as u32;
+    let height = img.rows() as u32;
+    let mut rgb_img = RgbImage::new(width, height);
+
+    let data = img.as_slice();
+    for y in 0..height {
+        for x in 0..width {
+            let idx = ((y * width + x) * 3) as usize;
+            let r = (data[idx] * 255.0).clamp(0.0, 255.0) as u8;
+            let g = (data[idx + 1] * 255.0).clamp(0.0, 255.0) as u8;
+            let b = (data[idx + 2] * 255.0).clamp(0.0, 255.0) as u8;
+            rgb_img.put_pixel(x, y, Rgb([r, g, b]));
+        }
+    }
+
+    Ok(rgb_img)
 }
 
 /// Calculate calibration from detected tags
@@ -137,7 +181,6 @@ pub fn calculate_calibration(
     // Skip rotation - let homography handle all the transformation
     println!("\nUsing direct perspective correction (no pre-rotation)");
 
-    let rotation_angle = 0.0;  // No rotation
     let working_image = input_image.clone();
     let crop_x = 0;
     let crop_y = 0;
@@ -214,16 +257,6 @@ pub fn calculate_calibration(
     let inverse_homography = homography.try_inverse()
         .context("Failed to invert homography matrix")?;
 
-    // Calculate pixel-to-mm scale
-    // Use average scale from the tag distances
-    let scale1 = ((dst_points[1].0 - dst_points[0].0).powi(2) + (dst_points[1].1 - dst_points[0].1).powi(2)).sqrt()
-        / ((src_points[1].0 - src_points[0].0).powi(2) + (src_points[1].1 - src_points[0].1).powi(2)).sqrt();
-    let scale2 = ((dst_points[2].0 - dst_points[1].0).powi(2) + (dst_points[2].1 - dst_points[1].1).powi(2)).sqrt()
-        / ((src_points[2].0 - src_points[1].0).powi(2) + (src_points[2].1 - src_points[1].1).powi(2)).sqrt();
-    let pixel_to_mm_scale = (scale1 + scale2) / 2.0;
-
-    println!("Pixel-to-mm scale factor: {:.4} mm/pixel", pixel_to_mm_scale);
-
     // Output dimensions match paper size
     // Use a resolution of 10 pixels/mm for good quality
     let pixels_per_mm = 10.0;
@@ -234,13 +267,9 @@ pub fn calculate_calibration(
 
     // Create calibration structure
     let calibration = CameraCalibration {
-        homography,
         inverse_homography,
-        pixel_to_mm_scale,
-        paper_size,
         output_width,
         output_height,
-        rotation_angle,
         rotated_image: Some(cropped_image.clone()),
     };
 
@@ -302,7 +331,6 @@ fn draw_homography_annotations(
     // Colors
     let tag_center_color = Rgb([255u8, 0u8, 255u8]);     // Magenta for tag centers (mapping points)
     let tag_corner_color = Rgb([0u8, 255u8, 255u8]);     // Cyan for tag corners
-    let arrow_color = Rgb([255u8, 255u8, 0u8]);          // Yellow for connecting lines
     let text_color = Rgb([255u8, 255u8, 255u8]);         // White for text
 
     // Draw tag centers (the points used for homography)
@@ -355,197 +383,37 @@ fn draw_homography_annotations(
     Ok(())
 }
 
-/// Rotate image and transform corner points
-fn rotate_image_and_points(
-    img: &RgbImage,
-    tl: (f64, f64),
-    tr: (f64, f64),
-    br: (f64, f64),
-    bl: (f64, f64),
-    angle: f64,
-) -> Result<(RgbImage, (f64, f64), (f64, f64), (f64, f64), (f64, f64))> {
-    let (width, height) = img.dimensions();
-    let center_x = width as f64 / 2.0;
-    let center_y = height as f64 / 2.0;
-
-    // Calculate new image dimensions after rotation
-    let cos_a = angle.cos().abs();
-    let sin_a = angle.sin().abs();
-    let new_width = ((width as f64) * cos_a + (height as f64) * sin_a).ceil() as u32;
-    let new_height = ((height as f64) * cos_a + (width as f64) * sin_a).ceil() as u32;
-
-    println!("  Original size: {}x{}, Rotated size: {}x{}", width, height, new_width, new_height);
-
-    // Create output image
-    let mut rotated = RgbImage::new(new_width, new_height);
-
-    let new_center_x = new_width as f64 / 2.0;
-    let new_center_y = new_height as f64 / 2.0;
-
-    // Rotate image using inverse mapping (backward mapping)
-    for y in 0..new_height {
-        for x in 0..new_width {
-            // Translate to origin
-            let x_rel = x as f64 - new_center_x;
-            let y_rel = y as f64 - new_center_y;
-
-            // Rotate backwards
-            let src_x = x_rel * angle.cos() + y_rel * angle.sin() + center_x;
-            let src_y = -x_rel * angle.sin() + y_rel * angle.cos() + center_y;
-
-            // Bilinear interpolation
-            if src_x >= 0.0 && src_x < (width - 1) as f64
-                && src_y >= 0.0 && src_y < (height - 1) as f64 {
-
-                let x0 = src_x.floor() as u32;
-                let y0 = src_y.floor() as u32;
-                let x1 = x0 + 1;
-                let y1 = y0 + 1;
-
-                let fx = src_x - x0 as f64;
-                let fy = src_y - y0 as f64;
-
-                let p00 = img.get_pixel(x0, y0);
-                let p10 = img.get_pixel(x1, y0);
-                let p01 = img.get_pixel(x0, y1);
-                let p11 = img.get_pixel(x1, y1);
-
-                let r = (
-                    p00[0] as f64 * (1.0 - fx) * (1.0 - fy) +
-                    p10[0] as f64 * fx * (1.0 - fy) +
-                    p01[0] as f64 * (1.0 - fx) * fy +
-                    p11[0] as f64 * fx * fy
-                ) as u8;
-
-                let g = (
-                    p00[1] as f64 * (1.0 - fx) * (1.0 - fy) +
-                    p10[1] as f64 * fx * (1.0 - fy) +
-                    p01[1] as f64 * (1.0 - fx) * fy +
-                    p11[1] as f64 * fx * fy
-                ) as u8;
-
-                let b = (
-                    p00[2] as f64 * (1.0 - fx) * (1.0 - fy) +
-                    p10[2] as f64 * fx * (1.0 - fy) +
-                    p01[2] as f64 * (1.0 - fx) * fy +
-                    p11[2] as f64 * fx * fy
-                ) as u8;
-
-                rotated.put_pixel(x, y, Rgb([r, g, b]));
-            }
-        }
-
-        if y % (new_height / 10).max(1) == 0 {
-            println!("    Rotation progress: {:.0}%", (y as f64 / new_height as f64) * 100.0);
-        }
-    }
-
-    // Transform corner points
-    let rotate_point = |p: (f64, f64)| -> (f64, f64) {
-        let x_rel = p.0 - center_x;
-        let y_rel = p.1 - center_y;
-
-        let new_x = x_rel * (-angle).cos() - y_rel * (-angle).sin() + new_center_x;
-        let new_y = x_rel * (-angle).sin() + y_rel * (-angle).cos() + new_center_y;
-
-        (new_x, new_y)
-    };
-
-    let rotated_tl = rotate_point(tl);
-    let rotated_tr = rotate_point(tr);
-    let rotated_br = rotate_point(br);
-    let rotated_bl = rotate_point(bl);
-
-    println!("  Rotation complete!");
-
-    Ok((rotated, rotated_tl, rotated_tr, rotated_br, rotated_bl))
-}
-
-/// Normalize points for better numerical stability in homography computation
-/// Returns (normalized_points, transformation_matrix)
-fn normalize_points(points: &[(f64, f64)]) -> (Vec<(f64, f64)>, Matrix3<f64>) {
-    // Compute centroid
-    let n = points.len() as f64;
-    let cx = points.iter().map(|(x, _)| x).sum::<f64>() / n;
-    let cy = points.iter().map(|(_, y)| y).sum::<f64>() / n;
-
-    // Compute average distance from centroid
-    let avg_dist = points.iter()
-        .map(|(x, y)| ((x - cx).powi(2) + (y - cy).powi(2)).sqrt())
-        .sum::<f64>() / n;
-
-    // Scale so average distance is sqrt(2)
-    let scale = if avg_dist > 0.0 { 2.0f64.sqrt() / avg_dist } else { 1.0 };
-
-    // Apply normalization: translate to origin, then scale
-    let normalized: Vec<(f64, f64)> = points.iter()
-        .map(|(x, y)| ((x - cx) * scale, (y - cy) * scale))
-        .collect();
-
-    // Transformation matrix T such that normalized = T * original
-    let t = Matrix3::new(
-        scale, 0.0,   -scale * cx,
-        0.0,   scale, -scale * cy,
-        0.0,   0.0,   1.0,
-    );
-
-    (normalized, t)
-}
-
-/// Compute homography matrix from 4 point correspondences using normalized DLT
+/// Compute homography matrix from 4 point correspondences using the homography crate
 fn compute_homography(src: &[(f64, f64)], dst: &[(f64, f64)]) -> Result<Matrix3<f64>> {
     if src.len() != 4 || dst.len() != 4 {
         bail!("Need exactly 4 point correspondences");
     }
 
-    // TRY WITHOUT NORMALIZATION FIRST to debug
-    println!("Computing homography WITHOUT normalization for debugging...");
+    println!("Computing homography using homography crate...");
 
-    // Build the A matrix for homogeneous linear system Ah = 0
-    // Each point correspondence gives 2 rows, 9 columns
-    let mut a = DMatrix::<f64>::zeros(8, 9);
+    // Create homography computation instance
+    let mut hc = HomographyComputation::new();
 
+    // Add all point correspondences
     for i in 0..4 {
-        let (x, y) = src[i];
-        let (u, v) = dst[i];
-
-        // First row for this correspondence
-        a[(i * 2, 0)] = -x;
-        a[(i * 2, 1)] = -y;
-        a[(i * 2, 2)] = -1.0;
-        a[(i * 2, 6)] = x * u;
-        a[(i * 2, 7)] = y * u;
-        a[(i * 2, 8)] = u;
-
-        // Second row for this correspondence
-        a[(i * 2 + 1, 3)] = -x;
-        a[(i * 2 + 1, 4)] = -y;
-        a[(i * 2 + 1, 5)] = -1.0;
-        a[(i * 2 + 1, 6)] = x * v;
-        a[(i * 2 + 1, 7)] = y * v;
-        a[(i * 2 + 1, 8)] = v;
+        let src_point = Point::new(src[i].0, src[i].1);
+        let dst_point = Point::new(dst[i].0, dst[i].1);
+        hc.add_point_correspondence(src_point, dst_point);
+        println!("  Point {}: ({:.1}, {:.1})px -> ({:.1}, {:.1})mm",
+            i, src[i].0, src[i].1, dst[i].0, dst[i].1);
     }
 
-    // Solve using SVD
-    let svd = SVD::new(a, true, true);
-    let v_t = svd.v_t.context("SVD failed to compute V^T")?;
+    // Compute homography
+    let restrictions = hc.get_restrictions();
+    let solution = restrictions.compute();
 
-    // Solution is the last column of V (last row of V^T)
-    // V^T has size (num_cols x num_cols) = (9 x 9), we want the last row (index 8)
-    let num_rows = v_t.nrows();
-    let h_vec = v_t.row(num_rows - 1);
-
-    // Reshape into 3x3 matrix
-    let h = Matrix3::new(
-        h_vec[0], h_vec[1], h_vec[2],
-        h_vec[3], h_vec[4], h_vec[5],
-        h_vec[6], h_vec[7], h_vec[8],
-    );
+    // Extract the matrix (homography crate returns nalgebra Matrix3)
+    let h = solution.matrix;
 
     // Normalize so that h[2,2] = 1
     let h_normalized = h / h[(2, 2)];
 
-    println!("Homography matrix (after denormalization and renormalization):");
+    println!("\nHomography matrix:");
     println!("{:.6}", h_normalized);
 
     // Verify homography by testing the correspondences
@@ -563,103 +431,63 @@ fn compute_homography(src: &[(f64, f64)], dst: &[(f64, f64)]) -> Result<Matrix3<
     Ok(h_normalized)
 }
 
-/// Apply perspective correction to warp image to flat paper coordinates
+/// Apply perspective correction to warp image to flat paper coordinates using kornia-rs
 pub fn apply_perspective_correction(
     source_img: &RgbImage,
     calibration: &CameraCalibration,
 ) -> Result<RgbImage> {
-    // Use the provided source image directly
-    let img = source_img;
-    let (src_width, src_height) = img.dimensions();
-    let mut output = RgbImage::new(calibration.output_width, calibration.output_height);
+    let (src_width, src_height) = source_img.dimensions();
 
-    println!("Warping image from {}x{} to {}x{}",
+    println!("Warping image from {}x{} to {}x{} using kornia-rs",
         src_width, src_height, calibration.output_width, calibration.output_height);
 
-    // Debug: Test a few key output positions to see where they map
-    let test_positions = [
-        (0, 0, "top-left corner"),
-        (calibration.output_width - 1, 0, "top-right corner"),
-        (calibration.output_width - 1, calibration.output_height - 1, "bottom-right corner"),
-        (0, calibration.output_height - 1, "bottom-left corner"),
-        (275, 275, "top-left tag center (~27.5mm, ~27.5mm)"),
+    // Convert RgbImage to kornia Image
+    let src_kornia = rgb_to_kornia(source_img)?;
+
+    // Create output kornia image
+    let dst_size = ImageSize {
+        width: calibration.output_width as usize,
+        height: calibration.output_height as usize,
+    };
+    let mut dst_kornia = KorniaImage::<f32, 3, CpuAllocator>::from_size_val(dst_size, 0.0, CpuAllocator)
+        .context("Failed to create output kornia image")?;
+
+    // Build the complete transformation matrix:
+    // We need to map from output pixels -> mm coords -> source pixels
+    //
+    // Transform chain: dst_pixel -> dst_mm -> src_mm -> src_pixel
+    // 1. Scale dst pixels to mm: divide by 10
+    // 2. Apply inverse homography: src_mm = H^-1 * dst_mm
+    // 3. Keep in pixel space (no scaling back needed as homography already maps to pixels)
+
+    // Create scaling matrix to convert output pixels to mm
+    let scale_to_mm = Matrix3::new(
+        0.1, 0.0, 0.0,
+        0.0, 0.1, 0.0,
+        0.0, 0.0, 1.0,
+    );
+
+    // Combined transformation: pixel -> mm -> inverse homography
+    let combined = calibration.inverse_homography * scale_to_mm;
+
+    // Convert Matrix3<f64> to [f32; 9] for kornia
+    let transform: [f32; 9] = [
+        combined[(0, 0)] as f32, combined[(0, 1)] as f32, combined[(0, 2)] as f32,
+        combined[(1, 0)] as f32, combined[(1, 1)] as f32, combined[(1, 2)] as f32,
+        combined[(2, 0)] as f32, combined[(2, 1)] as f32, combined[(2, 2)] as f32,
     ];
 
-    println!("\nDebug: Testing key output positions:");
-    for (x, y, desc) in &test_positions {
-        let mm_x = *x as f64 / 10.0;
-        let mm_y = *y as f64 / 10.0;
-        let src_point = Vector3::new(mm_x, mm_y, 1.0);
-        let dst_point = calibration.inverse_homography * src_point;
-        let src_x = dst_point[0] / dst_point[2];
-        let src_y = dst_point[1] / dst_point[2];
-        println!("  Output ({}, {}) = ({:.1}mm, {:.1}mm) [{}] -> Source ({:.1}px, {:.1}px)",
-            x, y, mm_x, mm_y, desc, src_x, src_y);
-    }
-    println!();
+    // Apply perspective warp using kornia
+    println!("Applying perspective warp with kornia...");
+    warp_perspective(
+        &src_kornia,
+        &mut dst_kornia,
+        &transform,
+        InterpolationMode::Bilinear,
+    ).context("Failed to apply perspective warp")?;
 
-    // For each pixel in the output image, find corresponding pixel in source
-    for y in 0..calibration.output_height {
-        for x in 0..calibration.output_width {
-            // Convert output pixel to mm coordinates (at 10 pixels/mm)
-            let mm_x = x as f64 / 10.0;
-            let mm_y = y as f64 / 10.0;
-
-            // Apply inverse homography to get source pixel coordinates
-            let src_point = Vector3::new(mm_x, mm_y, 1.0);
-            let dst_point = calibration.inverse_homography * src_point;
-
-            // Normalize homogeneous coordinates
-            let src_x = dst_point[0] / dst_point[2];
-            let src_y = dst_point[1] / dst_point[2];
-
-            // Bilinear interpolation
-            if src_x >= 0.0 && src_x < (src_width - 1) as f64
-                && src_y >= 0.0 && src_y < (src_height - 1) as f64 {
-
-                let x0 = src_x.floor() as u32;
-                let y0 = src_y.floor() as u32;
-                let x1 = x0 + 1;
-                let y1 = y0 + 1;
-
-                let fx = src_x - x0 as f64;
-                let fy = src_y - y0 as f64;
-
-                let p00 = img.get_pixel(x0, y0);
-                let p10 = img.get_pixel(x1, y0);
-                let p01 = img.get_pixel(x0, y1);
-                let p11 = img.get_pixel(x1, y1);
-
-                let r = (
-                    p00[0] as f64 * (1.0 - fx) * (1.0 - fy) +
-                    p10[0] as f64 * fx * (1.0 - fy) +
-                    p01[0] as f64 * (1.0 - fx) * fy +
-                    p11[0] as f64 * fx * fy
-                ) as u8;
-
-                let g = (
-                    p00[1] as f64 * (1.0 - fx) * (1.0 - fy) +
-                    p10[1] as f64 * fx * (1.0 - fy) +
-                    p01[1] as f64 * (1.0 - fx) * fy +
-                    p11[1] as f64 * fx * fy
-                ) as u8;
-
-                let b = (
-                    p00[2] as f64 * (1.0 - fx) * (1.0 - fy) +
-                    p10[2] as f64 * fx * (1.0 - fy) +
-                    p01[2] as f64 * (1.0 - fx) * fy +
-                    p11[2] as f64 * fx * fy
-                ) as u8;
-
-                output.put_pixel(x, y, Rgb([r, g, b]));
-            }
-        }
-
-        // Progress indicator every 10%
-        if y % (calibration.output_height / 10) == 0 {
-            println!("  Warping progress: {:.0}%", (y as f64 / calibration.output_height as f64) * 100.0);
-        }
-    }
+    // Convert back to RgbImage
+    let output = kornia_to_rgb(&dst_kornia)?;
 
     println!("Warping complete!");
 

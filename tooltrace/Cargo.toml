@@ -29,3 +29,6 @@ anyhow.workspace = true
 thiserror.workspace = true
 ab_glyph.workspace = true
 tooltrace-common.workspace = true
+
+# Homography computation
+homography = "0.2.0"
