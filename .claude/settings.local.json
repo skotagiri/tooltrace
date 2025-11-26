@@ -21,7 +21,17 @@
       "Bash(timeout 150 cargo run:*)",
       "Bash(curl:*)",
       "Bash(timeout 120 cargo run:*)",
-      "Bash(\"D:\\Repo\\tooltrace\\IMPLEMENTATION_LOG.md\")"
+      "Bash(\"D:\\Repo\\tooltrace\\IMPLEMENTATION_LOG.md\")",
+      "Bash(where:*)",
+      "Bash(git clone:*)",
+      "Bash(./bootstrap-vcpkg.bat)",
+      "Bash(./vcpkg install:*)",
+      "Bash(export OPENCV_LINK_PATHS=\"D:\\opencv\\opencv\\build\\x64\\vc16\\lib\")",
+      "Bash(export OPENCV_INCLUDE_PATHS=\"D:\\opencv\\opencv\\build\\include\")",
+      "Bash(export PATH=\"$PATH:/d/opencv/opencv/build/x64/vc16/bin\")",
+      "Bash(export OPENCV_LINK_LIBS=\"opencv_world4100\")",
+      "Bash(./LLVM-19.1.5-win64.exe /S /D=\"D:\\LLVM\")",
+      "Bash(winget:*)"
     ],
     "deny": [],
     "ask": []

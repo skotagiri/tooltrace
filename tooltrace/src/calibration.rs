@@ -1,68 +1,25 @@
 // Camera calibration and perspective correction module
-// Implements perspective transformation using nalgebra for homography calculation
-// Uses kornia-rs for image warping
+// Uses OpenCV for homography calculation and perspective warping
 
 use anyhow::{Context, Result, bail};
-use nalgebra::{Matrix3, Vector3};
 use image::{RgbImage, Rgb};
 use imageproc::drawing::{draw_line_segment_mut, draw_filled_circle_mut, draw_text_mut};
 use ab_glyph::{FontRef, PxScale};
 use tooltrace_common::PaperSize;
 use crate::detection::TagDetection;
+use opencv::{
+    core::{Mat, Point2f, Size, Vector, BORDER_CONSTANT, Scalar},
+    imgproc::{warp_perspective, INTER_LINEAR},
+    calib3d::find_homography,
+    prelude::{MatTraitConst, MatTraitConstManual},
+};
 
-// Kornia imports for warping
-use kornia_image::{Image as KorniaImage, ImageSize};
-use kornia_imgproc::warp::warp_perspective;
-use kornia_imgproc::interpolation::InterpolationMode;
-use kornia_image::allocator::CpuAllocator;
-
-// Homography computation
-use homography::{HomographyComputation, geo::Point};
 
 pub struct CameraCalibration {
-    pub inverse_homography: Matrix3<f64>,
+    pub homography_mat: Mat,  // OpenCV Mat for homography
     pub output_width: u32,
     pub output_height: u32,
     pub rotated_image: Option<RgbImage>,
-}
-
-/// Convert image::RgbImage to kornia::Image<f32, 3>
-fn rgb_to_kornia(img: &RgbImage) -> Result<KorniaImage<f32, 3, CpuAllocator>> {
-    let (width, height) = img.dimensions();
-    let size = ImageSize {
-        width: width as usize,
-        height: height as usize,
-    };
-
-    // Convert u8 pixels to f32 (normalized to 0.0-1.0)
-    let mut data = Vec::with_capacity((width * height * 3) as usize);
-    for pixel in img.pixels() {
-        data.push(pixel[0] as f32 / 255.0);
-        data.push(pixel[1] as f32 / 255.0);
-        data.push(pixel[2] as f32 / 255.0);
-    }
-
-    KorniaImage::new(size, data, CpuAllocator).context("Failed to create Kornia image")
-}
-
-/// Convert kornia::Image<f32, 3> back to image::RgbImage
-fn kornia_to_rgb(img: &KorniaImage<f32, 3, CpuAllocator>) -> Result<RgbImage> {
-    let width = img.cols() as u32;
-    let height = img.rows() as u32;
-    let mut rgb_img = RgbImage::new(width, height);
-
-    let data = img.as_slice();
-    for y in 0..height {
-        for x in 0..width {
-            let idx = ((y * width + x) * 3) as usize;
-            let r = (data[idx] * 255.0).clamp(0.0, 255.0) as u8;
-            let g = (data[idx + 1] * 255.0).clamp(0.0, 255.0) as u8;
-            let b = (data[idx + 2] * 255.0).clamp(0.0, 255.0) as u8;
-            rgb_img.put_pixel(x, y, Rgb([r, g, b]));
-        }
-    }
-
-    Ok(rgb_img)
 }
 
 /// Calculate calibration from detected tags
@@ -195,16 +152,26 @@ pub fn calculate_calibration(
     let rotated_corners = (*tl_corner, *tr_corner, *br_corner, *bl_corner);
 
     // Use proper computer vision approach: map tag CENTERS to their known positions
-    // This is more robust than trying to estimate paper corners
+    // Working entirely in pixels at 300 DPI
 
-    let (width_mm, height_mm) = paper_size.dimensions_mm();
-    let margin = 15.0;  // Distance from paper edge to tag outer corner
+    let (width_inches, height_inches) = paper_size.dimensions_inches();
+    let dpi = 300.0;
+    let margin_mm = 15.0;  // Distance from paper edge to tag outer corner
+    let margin_inches = margin_mm / 25.4;  // Convert mm to inches
 
-    // Tag centers are at margin + tag_size/2 from paper edges
-    let tag_center_offset = margin + tag_size_mm / 2.0;
+    // Tag centers are at margin + tag_size/2 from paper edges (in inches)
+    let tag_size_inches = tag_size_mm / 25.4;
+    let tag_center_offset_inches = margin_inches + tag_size_inches / 2.0;
+    let tag_center_offset_pixels = tag_center_offset_inches * dpi;
 
-    // Get tag centers in cropped image coordinates
-    let tag_centers_in_crop = vec![
+    // Output dimensions at 300 DPI
+    let output_width = (width_inches * dpi) as u32;
+    let output_height = (height_inches * dpi) as u32;
+
+    println!("Output image size: {}x{} pixels at {} DPI", output_width, output_height, dpi);
+
+    // Get tag centers in cropped image coordinates (source points in pixels)
+    let src_points = vec![
         (rot_top_left_tag.center.0 - crop_x as f64, rot_top_left_tag.center.1 - crop_y as f64),
         (rot_top_right_tag.center.0 - crop_x as f64, rot_top_right_tag.center.1 - crop_y as f64),
         (rot_bottom_right_tag.center.0 - crop_x as f64, rot_bottom_right_tag.center.1 - crop_y as f64),
@@ -219,55 +186,41 @@ pub fn calculate_calibration(
         (rotated_corners.3.0 - crop_x as f64, rotated_corners.3.1 - crop_y as f64),
     ];
 
-    println!("Using tag centers for homography calculation:");
-    println!("  Tag size: {:.1}mm, center offset from paper edge: {:.1}mm", tag_size_mm, tag_center_offset);
-
-    // Source points are tag centers in cropped image (pixels)
-    let src_points = tag_centers_in_crop.clone();
-
-    // Destination points are tag centers in paper coordinates (mm)
+    // Destination points are tag centers in output image coordinates (pixels at 300 DPI)
     // Tags are positioned at margin + tag_size/2 from each edge
     let dst_points = vec![
         // Top-left tag center
-        (tag_center_offset, tag_center_offset),
+        (tag_center_offset_pixels, tag_center_offset_pixels),
         // Top-right tag center
-        (width_mm - tag_center_offset, tag_center_offset),
+        (output_width as f64 - tag_center_offset_pixels, tag_center_offset_pixels),
         // Bottom-right tag center
-        (width_mm - tag_center_offset, height_mm - tag_center_offset),
+        (output_width as f64 - tag_center_offset_pixels, output_height as f64 - tag_center_offset_pixels),
         // Bottom-left tag center
-        (tag_center_offset, height_mm - tag_center_offset),
+        (tag_center_offset_pixels, output_height as f64 - tag_center_offset_pixels),
     ];
 
-    println!("Source points (pixels) - tag centers in cropped image:");
+    println!("Using tag centers for homography calculation (pixels to pixels):");
+    println!("  Tag center offset from paper edge: {:.1}mm = {:.1}px at {}DPI",
+        margin_mm + tag_size_mm / 2.0, tag_center_offset_pixels, dpi);
+
+    println!("\nSource points (pixels) - tag centers in input image:");
     println!("  Top-left tag (ID {}) center: ({:.1}, {:.1})", rot_top_left_tag.id, src_points[0].0, src_points[0].1);
     println!("  Top-right tag (ID {}) center: ({:.1}, {:.1})", rot_top_right_tag.id, src_points[1].0, src_points[1].1);
     println!("  Bottom-right tag (ID {}) center: ({:.1}, {:.1})", rot_bottom_right_tag.id, src_points[2].0, src_points[2].1);
     println!("  Bottom-left tag (ID {}) center: ({:.1}, {:.1})", rot_bottom_left_tag.id, src_points[3].0, src_points[3].1);
 
-    println!("Destination points (mm):");
+    println!("\nDestination points (pixels at {}DPI) - tag centers in output image:", dpi);
     let corner_names = ["Top-left", "Top-right", "Bottom-right", "Bottom-left"];
     for (i, p) in dst_points.iter().enumerate() {
         println!("  {}: ({:.1}, {:.1})", corner_names[i], p.0, p.1);
     }
 
-    // Calculate homography matrix using DLT (Direct Linear Transform)
-    let homography = compute_homography(&src_points, &dst_points)?;
-
-    // Calculate inverse for warping
-    let inverse_homography = homography.try_inverse()
-        .context("Failed to invert homography matrix")?;
-
-    // Output dimensions match paper size
-    // Use a resolution of 10 pixels/mm for good quality
-    let pixels_per_mm = 10.0;
-    let output_width = (width_mm * pixels_per_mm) as u32;
-    let output_height = (height_mm * pixels_per_mm) as u32;
-
-    println!("Output image size: {}x{} pixels ({:.1} pixels/mm)", output_width, output_height, pixels_per_mm);
+    // Calculate homography matrix using OpenCV - mapping pixels to pixels
+    let homography_mat = compute_homography_opencv(&src_points, &dst_points)?;
 
     // Create calibration structure
     let calibration = CameraCalibration {
-        inverse_homography,
+        homography_mat,
         output_width,
         output_height,
         rotated_image: Some(cropped_image.clone()),
@@ -383,111 +336,105 @@ fn draw_homography_annotations(
     Ok(())
 }
 
-/// Compute homography matrix from 4 point correspondences using the homography crate
-fn compute_homography(src: &[(f64, f64)], dst: &[(f64, f64)]) -> Result<Matrix3<f64>> {
+/// Compute homography matrix from 4 point correspondences using OpenCV
+fn compute_homography_opencv(src: &[(f64, f64)], dst: &[(f64, f64)]) -> Result<Mat> {
     if src.len() != 4 || dst.len() != 4 {
         bail!("Need exactly 4 point correspondences");
     }
 
-    println!("Computing homography using homography crate...");
+    println!("Computing homography using OpenCV...");
 
-    // Create homography computation instance
-    let mut hc = HomographyComputation::new();
+    // Convert points to OpenCV format
+    let src_points: Vector<Point2f> = src.iter()
+        .map(|(x, y)| Point2f::new(*x as f32, *y as f32))
+        .collect();
 
-    // Add all point correspondences
-    for i in 0..4 {
-        let src_point = Point::new(src[i].0, src[i].1);
-        let dst_point = Point::new(dst[i].0, dst[i].1);
-        hc.add_point_correspondence(src_point, dst_point);
-        println!("  Point {}: ({:.1}, {:.1})px -> ({:.1}, {:.1})mm",
-            i, src[i].0, src[i].1, dst[i].0, dst[i].1);
-    }
+    let dst_points: Vector<Point2f> = dst.iter()
+        .map(|(x, y)| Point2f::new(*x as f32, *y as f32))
+        .collect();
 
-    // Compute homography
-    let restrictions = hc.get_restrictions();
-    let solution = restrictions.compute();
-
-    // Extract the matrix (homography crate returns nalgebra Matrix3)
-    let h = solution.matrix;
-
-    // Normalize so that h[2,2] = 1
-    let h_normalized = h / h[(2, 2)];
+    // Compute homography using OpenCV with method 0 (normalized DLT)
+    // For exactly 4 points, this uses Hartley's normalization for numerical stability
+    let homography = find_homography(&src_points, &dst_points, &mut Mat::default(), 0, 3.0)
+        .context("Failed to compute homography")?;
 
     println!("\nHomography matrix:");
-    println!("{:.6}", h_normalized);
+    for row in 0..3 {
+        print!("  [");
+        for col in 0..3 {
+            let val: f64 = *homography.at_2d(row, col).context("Failed to read homography value")?;
+            print!(" {:12.6}", val);
+        }
+        println!(" ]");
+    }
 
-    // Verify homography by testing the correspondences
+    // Verify homography
     println!("\nVerifying homography accuracy:");
     for i in 0..4 {
-        let src_pt = Vector3::new(src[i].0, src[i].1, 1.0);
-        let mapped = h_normalized * src_pt;
-        let mapped_x = mapped[0] / mapped[2];
-        let mapped_y = mapped[1] / mapped[2];
-        println!("  Point {}: ({:.1}, {:.1})px -> ({:.1}, {:.1})mm, expected ({:.1}, {:.1})mm, error: ({:.2}, {:.2})mm",
-            i, src[i].0, src[i].1, mapped_x, mapped_y, dst[i].0, dst[i].1,
+        let x = src[i].0;
+        let y = src[i].1;
+        let h00: f64 = *homography.at_2d(0, 0)?;
+        let h01: f64 = *homography.at_2d(0, 1)?;
+        let h02: f64 = *homography.at_2d(0, 2)?;
+        let h10: f64 = *homography.at_2d(1, 0)?;
+        let h11: f64 = *homography.at_2d(1, 1)?;
+        let h12: f64 = *homography.at_2d(1, 2)?;
+        let h20: f64 = *homography.at_2d(2, 0)?;
+        let h21: f64 = *homography.at_2d(2, 1)?;
+        let h22: f64 = *homography.at_2d(2, 2)?;
+
+        let w = h20 * x + h21 * y + h22;
+        let mapped_x = (h00 * x + h01 * y + h02) / w;
+        let mapped_y = (h10 * x + h11 * y + h12) / w;
+
+        println!("  Point {}: ({:.1}, {:.1})px -> ({:.1}, {:.1})px, expected ({:.1}, {:.1})px, error: ({:.2}, {:.2})px",
+            i, x, y, mapped_x, mapped_y, dst[i].0, dst[i].1,
             mapped_x - dst[i].0, mapped_y - dst[i].1);
     }
 
-    Ok(h_normalized)
+    Ok(homography)
 }
 
-/// Apply perspective correction to warp image to flat paper coordinates using kornia-rs
+/// Apply perspective correction to warp image to flat paper coordinates using OpenCV
 pub fn apply_perspective_correction(
     source_img: &RgbImage,
     calibration: &CameraCalibration,
 ) -> Result<RgbImage> {
     let (src_width, src_height) = source_img.dimensions();
 
-    println!("Warping image from {}x{} to {}x{} using kornia-rs",
+    println!("Warping image from {}x{} to {}x{} using OpenCV",
         src_width, src_height, calibration.output_width, calibration.output_height);
 
-    // Convert RgbImage to kornia Image
-    let src_kornia = rgb_to_kornia(source_img)?;
+    // Convert RgbImage to OpenCV Mat
+    let src_mat_raw = Mat::from_slice(source_img.as_raw())
+        .context("Failed to create Mat from image")?;
+    let src_mat = src_mat_raw
+        .reshape_nd(3, &[src_height as i32, src_width as i32])
+        .context("Failed to reshape Mat")?;
 
-    // Create output kornia image
-    let dst_size = ImageSize {
-        width: calibration.output_width as usize,
-        height: calibration.output_height as usize,
-    };
-    let mut dst_kornia = KorniaImage::<f32, 3, CpuAllocator>::from_size_val(dst_size, 0.0, CpuAllocator)
-        .context("Failed to create output kornia image")?;
+    // Create output Mat
+    let mut dst_mat = Mat::default();
+    let dst_size = Size::new(calibration.output_width as i32, calibration.output_height as i32);
 
-    // Build the complete transformation matrix:
-    // We need to map from output pixels -> mm coords -> source pixels
-    //
-    // Transform chain: dst_pixel -> dst_mm -> src_mm -> src_pixel
-    // 1. Scale dst pixels to mm: divide by 10
-    // 2. Apply inverse homography: src_mm = H^-1 * dst_mm
-    // 3. Keep in pixel space (no scaling back needed as homography already maps to pixels)
-
-    // Create scaling matrix to convert output pixels to mm
-    let scale_to_mm = Matrix3::new(
-        0.1, 0.0, 0.0,
-        0.0, 0.1, 0.0,
-        0.0, 0.0, 1.0,
-    );
-
-    // Combined transformation: pixel -> mm -> inverse homography
-    let combined = calibration.inverse_homography * scale_to_mm;
-
-    // Convert Matrix3<f64> to [f32; 9] for kornia
-    let transform: [f32; 9] = [
-        combined[(0, 0)] as f32, combined[(0, 1)] as f32, combined[(0, 2)] as f32,
-        combined[(1, 0)] as f32, combined[(1, 1)] as f32, combined[(1, 2)] as f32,
-        combined[(2, 0)] as f32, combined[(2, 1)] as f32, combined[(2, 2)] as f32,
-    ];
-
-    // Apply perspective warp using kornia
-    println!("Applying perspective warp with kornia...");
+    // Apply perspective warp
+    println!("Applying perspective warp with OpenCV...");
     warp_perspective(
-        &src_kornia,
-        &mut dst_kornia,
-        &transform,
-        InterpolationMode::Bilinear,
-    ).context("Failed to apply perspective warp")?;
+        &src_mat,
+        &mut dst_mat,
+        &calibration.homography_mat,
+        dst_size,
+        INTER_LINEAR,
+        BORDER_CONSTANT,
+        Scalar::default(),
+    ).context("Failed to warp perspective")?;
 
     // Convert back to RgbImage
-    let output = kornia_to_rgb(&dst_kornia)?;
+    let dst_data = dst_mat.data_bytes().context("Failed to get output data")?;
+    let output = RgbImage::from_raw(
+        calibration.output_width,
+        calibration.output_height,
+        dst_data.to_vec()
+    ).context("Failed to create output image")?;
 
     println!("Warping complete!");
 

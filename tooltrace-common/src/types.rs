@@ -22,6 +22,15 @@ impl PaperSize {
         }
     }
 
+    /// Returns (width, height) in inches
+    pub fn dimensions_inches(&self) -> (f64, f64) {
+        match self {
+            PaperSize::A4 => (210.0 / 25.4, 297.0 / 25.4),      // ~8.27 × 11.69 inches
+            PaperSize::Letter => (8.5, 11.0),                     // Exact: 8.5 × 11 inches
+            PaperSize::A3 => (297.0 / 25.4, 420.0 / 25.4),      // ~11.69 × 16.54 inches
+        }
+    }
+
     /// Returns (width, height) in points (1/72 inch)
     /// Used for PDF generation
     pub fn dimensions_pt(&self) -> (f64, f64) {

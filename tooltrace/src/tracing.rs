@@ -2,7 +2,7 @@
 // TODO: Implement contour extraction and smoothing
 
 use anyhow::Result;
-use tooltrace_common::{Contour, Point2DMm};
+use tooltrace_common::Contour;
 
 pub fn trace_contour(
     _segmented_image: &[u8],

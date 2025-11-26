@@ -21,8 +21,7 @@ image = "0.25"
 imageproc = "0.25"
 
 # Computer vision
-# Using pure Rust alternatives to avoid C/C++ build issues on Windows
-# opencv = { version = "0.92", features = ["clang-runtime"] }
+opencv = { version = "0.97.2", default-features = false, features = ["calib3d", "imgproc", "imgcodecs"] }
 # apriltag = { version = "0.3", features = ["nalgebra", "image"] }
 kornia-rs = "0.1"
 kornia-image = "0.1"
