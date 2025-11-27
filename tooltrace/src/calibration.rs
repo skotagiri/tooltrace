@@ -104,11 +104,48 @@ pub fn calculate_calibration(
         })
         .unwrap();
 
-    println!("Corner assignments by GEOMETRIC position:");
+    println!("Corner assignments by GEOMETRIC position (in image coordinates):");
     println!("  Top-left: ID {} at ({:.1}, {:.1})", top_left_tag.id, top_left_tag.center.0, top_left_tag.center.1);
     println!("  Top-right: ID {} at ({:.1}, {:.1})", top_right_tag.id, top_right_tag.center.0, top_right_tag.center.1);
     println!("  Bottom-right: ID {} at ({:.1}, {:.1})", bottom_right_tag.id, bottom_right_tag.center.0, bottom_right_tag.center.1);
     println!("  Bottom-left: ID {} at ({:.1}, {:.1})", bottom_left_tag.id, bottom_left_tag.center.0, bottom_left_tag.center.1);
+
+    // Detect paper rotation based on tag IDs
+    // Expected IDs: base_id+0 (TL), base_id+1 (TR), base_id+2 (BR), base_id+3 (BL)
+    let rotation = detect_paper_rotation(
+        top_left_tag.id, top_right_tag.id, bottom_right_tag.id, bottom_left_tag.id, base_id
+    );
+
+    println!("\nDetected paper rotation: {}", match rotation {
+        0 => "0° (upright)",
+        1 => "90° counter-clockwise (or 270° clockwise)",
+        2 => "180° (upside down)",
+        3 => "270° counter-clockwise (or 90° clockwise)",
+        _ => "unknown"
+    });
+
+    // Remap corners based on rotation
+    // Map geometric positions to actual paper corners by finding where each tag ID is
+    // Goal: Find which geometric position contains Tag base_id+0, base_id+1, base_id+2, base_id+3
+    let (actual_tl, actual_tr, actual_br, actual_bl) = match rotation {
+        0 => (top_left_tag, top_right_tag, bottom_right_tag, bottom_left_tag), // No rotation
+        1 => (bottom_left_tag, top_left_tag, top_right_tag, bottom_right_tag), // 90° CCW: TL has Tag 5, TR has Tag 6, BR has Tag 7, BL has Tag 4
+        2 => (bottom_right_tag, bottom_left_tag, top_left_tag, top_right_tag), // 180°: TL has Tag 6, TR has Tag 7, BR has Tag 4, BL has Tag 5
+        3 => (top_right_tag, bottom_right_tag, bottom_left_tag, top_left_tag), // 270° CCW: TL has Tag 7, TR has Tag 4, BR has Tag 5, BL has Tag 6
+        _ => bail!("Invalid rotation detected"),
+    };
+
+    println!("\nCorrected corner assignments (actual paper positions):");
+    println!("  Paper top-left (ID {}): at image ({:.1}, {:.1})", actual_tl.id, actual_tl.center.0, actual_tl.center.1);
+    println!("  Paper top-right (ID {}): at image ({:.1}, {:.1})", actual_tr.id, actual_tr.center.0, actual_tr.center.1);
+    println!("  Paper bottom-right (ID {}): at image ({:.1}, {:.1})", actual_br.id, actual_br.center.0, actual_br.center.1);
+    println!("  Paper bottom-left (ID {}): at image ({:.1}, {:.1})", actual_bl.id, actual_bl.center.0, actual_bl.center.1);
+
+    // Now use the corrected corners for the rest of the calibration
+    let top_left_tag = actual_tl;
+    let top_right_tag = actual_tr;
+    let bottom_right_tag = actual_br;
+    let bottom_left_tag = actual_bl;
 
     // Use the OUTER CORNERS of each tag for accurate paper boundary detection
     // AprilTag corners are ordered: [0]=bottom-left, [1]=bottom-right, [2]=top-right, [3]=top-left
@@ -266,6 +303,40 @@ pub fn calculate_calibration(
     }
 
     Ok(calibration)
+}
+
+/// Detect paper rotation by comparing tag IDs at geometric positions
+/// Returns rotation amount: 0=none, 1=90°CCW, 2=180°, 3=270°CCW
+fn detect_paper_rotation(geo_tl_id: u32, geo_tr_id: u32, geo_br_id: u32, geo_bl_id: u32, base_id: u32) -> u32 {
+    // Expected IDs for upright paper:
+    // TL=base_id+0, TR=base_id+1, BR=base_id+2, BL=base_id+3
+
+    // Check which rotation matches the detected pattern
+    if geo_tl_id == base_id && geo_tr_id == base_id + 1 &&
+       geo_br_id == base_id + 2 && geo_bl_id == base_id + 3 {
+        return 0; // No rotation
+    }
+
+    // 90° CCW: what was at TR is now at TL, BR->TR, BL->BR, TL->BL
+    if geo_tl_id == base_id + 1 && geo_tr_id == base_id + 2 &&
+       geo_br_id == base_id + 3 && geo_bl_id == base_id {
+        return 1;
+    }
+
+    // 180°: what was at BR is now at TL, BL->TR, TL->BR, TR->BL
+    if geo_tl_id == base_id + 2 && geo_tr_id == base_id + 3 &&
+       geo_br_id == base_id && geo_bl_id == base_id + 1 {
+        return 2;
+    }
+
+    // 270° CCW (90° CW): what was at BL is now at TL, TL->TR, TR->BR, BR->BL
+    if geo_tl_id == base_id + 3 && geo_tr_id == base_id &&
+       geo_br_id == base_id + 1 && geo_bl_id == base_id + 2 {
+        return 3;
+    }
+
+    // Unknown rotation
+    4
 }
 
 /// Draw homography mapping annotations on the cropped image
