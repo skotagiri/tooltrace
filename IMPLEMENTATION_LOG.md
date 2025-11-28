@@ -1,3 +1,70 @@
+## 2025-11-28: Nested Contour Removal Optimization
+
+**Update**: Implemented post-processing algorithm to remove contours that are fully contained within other contours, reducing false positives from nested objects.
+
+### Implementation
+
+**File**: `tooltrace/src/segmentation.rs:1212-1323`
+
+**Algorithm**:
+- Uses OpenCV's `pointPolygonTest` for geometric containment testing
+- Pairwise checking of all contours to identify nested relationships
+- Efficient sampling strategy:
+  - Small contours (<50 points): Test all points
+  - Large contours (≥50 points): Sample every Nth point (up to 50 samples)
+- Containment criteria: ≥95% of sampled points must be inside outer contour
+- Removes only inner contours, preserves outer boundaries
+
+**Functions**:
+1. `remove_nested_contours()` - Main filtering logic (lines 1212-1281)
+2. `is_contour_inside()` - Point-in-polygon containment test (lines 1283-1323)
+
+### Test Results
+
+Tested on `d:\data\updated.jpeg` with FastSAM segmentation:
+
+**Before nested contour removal**: 11 contours detected
+**Nested contours identified**:
+- Contour 0 → contained within contour 5
+- Contour 2 → contained within contour 5
+- Contour 6 → contained within contour 5
+- Contour 8 → contained within contour 5
+
+**After nested contour removal**: 7 contours (36% reduction)
+
+**Export Results**:
+- SVG output: 203.8mm × 272.4mm with 7 clean contours
+- DXF output: 201.8mm × 270.4mm with 7 clean contours
+
+**Status**: ✓ COMPLETE - Nested contour filtering working correctly
+
+---
+
+## 2025-11-27: False Positive Filtering for FastSAM
+
+**Update**: Added tunable filtering parameters to reduce false positive detections on white paper backgrounds.
+
+### Implementation
+
+**File**: `tooltrace/src/segmentation.rs:795-804, 1135-1143`
+
+**Filtering Parameters**:
+- Confidence threshold: increased from 0.25 to 0.50 (higher selectivity)
+- Area-based filtering:
+  - Minimum area: 0.05% of image (filters noise)
+  - Maximum area: 70% of image (filters background/paper)
+
+### Test Results
+
+**Before filtering**: 22 contours (many false positives on white paper)
+**After filtering**: 11 contours (50% reduction)
+
+All detected objects are within reasonable size ranges (34K - 1M pixels), successfully filtering out white paper background and noise.
+
+**Status**: ✓ COMPLETE - False positive filtering working well
+
+---
+
 ## 2025-11-27: FastSAM ONNX Model Integration - COMPLETE ✓
 
 **Update**: Successfully integrated FastSAM (Fast Segment Anything Model) with ONNX Runtime and DirectML GPU acceleration. FastSAM provides superior segmentation for all objects in the image without class-specific training.
@@ -76,13 +143,14 @@ Tested on `d:\data\updated.jpeg` (Letter paper, 19.5mm AprilTags):
 - Both formats ready for Fusion 360 import
 - **Debug overlay**: Colored contours visualization saved to `*_fastsam_masks.jpg`
 
-### Advantages over YOLOv8-seg
+### Key Advantages
 
 1. **Class-agnostic segmentation**: Detects all objects regardless of category
-2. **Better for tools**: No need for class-specific training on tool categories
-3. **Simpler output processing**: Only needs bbox coordinates and objectness score
-4. **Larger input size**: 1024×1024 vs 640×640 provides better detail
+2. **Perfect for tools**: No need for class-specific training on tool categories
+3. **Mask-based precision**: Generates actual segmentation masks, not just bounding boxes
+4. **Larger input size**: 1024×1024 provides excellent detail for tool contours
 5. **Designed for "segment anything"**: Optimized for generic object segmentation
+6. **Robust filtering**: Tunable confidence and area thresholds reduce false positives
 
 ### Performance Characteristics
 
