@@ -8,7 +8,7 @@ use opencv::{
     dnn,
     imgcodecs,
     imgproc::{self, CHAIN_APPROX_SIMPLE, RETR_EXTERNAL},
-    prelude::{MatTraitConstManual, MatTrait, NetTrait},
+    prelude::{MatTraitConstManual},
 };
 use tooltrace_common::{Contour, Point2DMm};
 
@@ -1201,9 +1201,125 @@ fn process_fastsam_outputs(
         println!("Saved segmentation masks overlay to: {}", path);
     }
 
-    println!("Returning {} contours from segmentation masks", contours_result.len());
+    // Remove contours that are fully contained within other contours
+    let filtered_contours = remove_nested_contours(contours_result, img_width, img_height)?;
 
-    Ok(contours_result)
+    println!("Returning {} contours after removing nested contours", filtered_contours.len());
+
+    Ok(filtered_contours)
+}
+
+/// Remove contours that are fully contained within other contours
+/// Uses OpenCV's pointPolygonTest to check containment
+fn remove_nested_contours(
+    contours: Vec<Contour>,
+    img_width: i32,
+    img_height: i32,
+) -> Result<Vec<Contour>> {
+    use opencv::core::Point;
+    use opencv::core::Vector;
+    use opencv::imgproc;
+
+    if contours.len() <= 1 {
+        return Ok(contours);
+    }
+
+    println!("Checking {} contours for containment...", contours.len());
+
+    // Convert our contours to OpenCV format for polygon testing
+    let mut opencv_contours: Vec<Vector<Point>> = Vec::new();
+    for contour in &contours {
+        let mut pts: Vector<Point> = Vector::new();
+        for pt in &contour.points {
+            pts.push(Point::new(pt.x as i32, pt.y as i32));
+        }
+        opencv_contours.push(pts);
+    }
+
+    // Track which contours are contained within others
+    let mut is_contained = vec![false; contours.len()];
+
+    // Check each pair of contours
+    for i in 0..contours.len() {
+        if is_contained[i] {
+            continue; // Skip if already marked as contained
+        }
+
+        for j in 0..contours.len() {
+            if i == j || is_contained[j] {
+                continue;
+            }
+
+            // Check if contour i is fully inside contour j
+            if is_contour_inside(&opencv_contours[i], &opencv_contours[j])? {
+                is_contained[i] = true;
+                println!("  Contour {} is contained within contour {}", i, j);
+                break;
+            }
+        }
+    }
+
+    // Collect only non-contained contours
+    let result: Vec<Contour> = contours
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, contour)| {
+            if is_contained[idx] {
+                None
+            } else {
+                Some(contour)
+            }
+        })
+        .collect();
+
+    let removed = opencv_contours.len() - result.len();
+    if removed > 0 {
+        println!("Removed {} nested contour(s)", removed);
+    }
+
+    Ok(result)
+}
+
+/// Check if contour A is fully contained inside contour B
+/// Samples points from contour A and tests if they're all inside B
+fn is_contour_inside(contour_a: &Vector<Point>, contour_b: &Vector<Point>) -> Result<bool> {
+    use opencv::imgproc;
+
+    if contour_a.is_empty() || contour_b.is_empty() {
+        return Ok(false);
+    }
+
+    // Sample every Nth point from contour A to test (for efficiency)
+    // For small contours, test all points; for large ones, sample
+    let sample_step = if contour_a.len() < 50 {
+        1
+    } else {
+        contour_a.len() / 50
+    };
+
+    let mut points_tested = 0;
+    let mut points_inside = 0;
+
+    for i in (0..contour_a.len()).step_by(sample_step) {
+        let pt = contour_a.get(i)?;
+        let point_f64 = opencv::core::Point2f::new(pt.x as f32, pt.y as f32);
+
+        // pointPolygonTest returns:
+        // > 0 if point is inside
+        // < 0 if point is outside
+        // = 0 if point is on edge
+        let dist = imgproc::point_polygon_test(contour_b, point_f64, false)?;
+
+        points_tested += 1;
+        if dist >= 0.0 {
+            points_inside += 1;
+        }
+    }
+
+    // Contour A is inside B if all (or nearly all) sampled points are inside
+    // Use 95% threshold to handle edge cases and floating point precision
+    let inside_ratio = points_inside as f64 / points_tested as f64;
+    Ok(inside_ratio >= 0.95)
 }
 
 /// Convert contours from pixels to millimeters
