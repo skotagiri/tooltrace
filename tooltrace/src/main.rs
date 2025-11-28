@@ -107,11 +107,90 @@ fn main() -> Result<()> {
     flattened.save(&flattened_path)?;
     println!("Saved flattened image to: {}", flattened_path);
 
-    // TODO: Step 4: Segment object
-    // TODO: Step 5: Trace contour
-    // TODO: Step 6: Export to vector format(s)
+    // Step 4: Segment objects from the flattened image
+    println!("\nStep 4: Segmenting objects...");
 
-    println!("\nRemaining processing steps (segmentation, tracing, export) not yet implemented.");
+    // Calculate AprilTag exclusion regions in flattened image space (at 300 DPI)
+    let dpi = 300.0;
+    let pixels_per_mm = dpi / 25.4; // 11.811 pixels/mm
+    let margin_mm = 15.0; // Tags are 15mm from paper edge
+    let tag_size_mm = args.tag_size;
+
+    // Calculate tag regions: [top-left, top-right, bottom-right, bottom-left]
+    let tag_regions: Vec<(i32, i32, i32, i32)> = vec![
+        // Top-left tag
+        (
+            (margin_mm * pixels_per_mm) as i32,
+            (margin_mm * pixels_per_mm) as i32,
+            (tag_size_mm * pixels_per_mm) as i32,
+            (tag_size_mm * pixels_per_mm) as i32,
+        ),
+        // Top-right tag
+        (
+            (calibration.output_width as f64 - (margin_mm + tag_size_mm) * pixels_per_mm) as i32,
+            (margin_mm * pixels_per_mm) as i32,
+            (tag_size_mm * pixels_per_mm) as i32,
+            (tag_size_mm * pixels_per_mm) as i32,
+        ),
+        // Bottom-right tag
+        (
+            (calibration.output_width as f64 - (margin_mm + tag_size_mm) * pixels_per_mm) as i32,
+            (calibration.output_height as f64 - (margin_mm + tag_size_mm) * pixels_per_mm) as i32,
+            (tag_size_mm * pixels_per_mm) as i32,
+            (tag_size_mm * pixels_per_mm) as i32,
+        ),
+        // Bottom-left tag
+        (
+            (margin_mm * pixels_per_mm) as i32,
+            (calibration.output_height as f64 - (margin_mm + tag_size_mm) * pixels_per_mm) as i32,
+            (tag_size_mm * pixels_per_mm) as i32,
+            (tag_size_mm * pixels_per_mm) as i32,
+        ),
+    ];
+
+    println!("Calculated {} AprilTag exclusion regions", tag_regions.len());
+
+    let debug_contours_path = if args.debug {
+        Some(format!("{}_contours.jpg", args.output))
+    } else {
+        None
+    };
+    let contours_pixels = segmentation::segment_object(&flattened, &tag_regions, debug_contours_path.as_deref())?;
+
+    if contours_pixels.is_empty() {
+        println!("\nNo contours detected. Try adjusting the object placement or lighting.");
+        return Ok(());
+    }
+
+    // Step 5: Convert pixel coordinates to millimeters
+    println!("\nStep 5: Converting coordinates to millimeters...");
+    let dpi = 300.0; // Flattened image is at 300 DPI
+    let contours_mm = segmentation::pixels_to_mm(contours_pixels, dpi);
+
+    println!("Converted {} contour(s) to millimeter coordinates", contours_mm.len());
+
+    // Step 6: Export to vector format(s)
+    println!("\nStep 6: Exporting to vector format(s)...");
+    let format = OutputFormat::from(args.format);
+
+    match format {
+        OutputFormat::Svg => {
+            let svg_path = format!("{}.svg", args.output);
+            export_svg::export_svg(&contours_mm, &svg_path)?;
+        }
+        OutputFormat::Dxf => {
+            let dxf_path = format!("{}.dxf", args.output);
+            export_dxf::export_dxf(&contours_mm, &dxf_path)?;
+        }
+        OutputFormat::Both => {
+            let svg_path = format!("{}.svg", args.output);
+            let dxf_path = format!("{}.dxf", args.output);
+            export_svg::export_svg(&contours_mm, &svg_path)?;
+            export_dxf::export_dxf(&contours_mm, &dxf_path)?;
+        }
+    }
+
+    println!("\n✓ Processing complete!");
 
     Ok(())
 }
