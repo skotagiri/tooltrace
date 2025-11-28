@@ -791,9 +791,17 @@ fn process_fastsam_outputs(
     // output0: shape [1, 37, N] - detections (4 bbox + 1 obj + 32 mask coeffs)
     // output1: shape [1, 32, H, W] - mask prototypes
 
-    let conf_threshold = 0.25f32;
-    let nms_threshold = 0.45f32;
-    let mask_threshold = 0.5f32;
+    // Tunable parameters for FastSAM segmentation
+    let conf_threshold = 0.50f32;      // Confidence threshold: higher = more selective, fewer false positives
+    let nms_threshold = 0.45f32;       // NMS IoU threshold
+    let mask_threshold = 0.5f32;       // Mask binarization threshold
+
+    // Area-based filtering to remove background and noise
+    let total_pixels = (img_width * img_height) as f32;
+    let min_area_pixels = total_pixels * 0.0005;  // Min 0.05% of image (filter noise)
+    let max_area_pixels = total_pixels * 0.70;    // Max 70% of image (filter paper background)
+
+    println!("Area filtering: min={:.0} pixels, max={:.0} pixels", min_area_pixels, max_area_pixels);
 
     // Extract detection tensor (output0)
     let det_value = &outputs[0];
@@ -1124,6 +1132,16 @@ fn process_fastsam_outputs(
         if let Some(contour_idx) = largest_contour_idx {
             let contour = mask_contours.get(contour_idx)?;
 
+            // Filter by area to remove background (too large) and noise (too small)
+            if largest_area < min_area_pixels as f64 {
+                println!("  Skipped: area {:.1} pixels too small (min {:.0})", largest_area, min_area_pixels);
+                continue;
+            }
+            if largest_area > max_area_pixels as f64 {
+                println!("  Skipped: area {:.1} pixels too large (max {:.0}), likely background", largest_area, max_area_pixels);
+                continue;
+            }
+
             // Convert OpenCV contour to our Contour type
             let mut points = Vec::new();
             for j in 0..contour.len() {
@@ -1134,7 +1152,7 @@ fn process_fastsam_outputs(
                 });
             }
 
-            println!("  Extracted contour with {} points, area={:.1} pixels", points.len(), largest_area);
+            println!("  ✓ Extracted contour with {} points, area={:.1} pixels", points.len(), largest_area);
 
             contours_result.push(Contour {
                 points,
