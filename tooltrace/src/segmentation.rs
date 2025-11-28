@@ -110,13 +110,33 @@ fn segment_with_fastsam(
     // Process FastSAM outputs
     // Expected: output0 [1, 37, N] where N is number of anchors
     //           output1 [1, 32, H, W] mask prototypes
+
+    // Create debug paths for segmentation overlays
+    let contour_debug_path = debug_path.map(|p| {
+        p.replace("_contours.jpg", "_fastsam_contours.jpg")
+    });
+    let masks_debug_path = debug_path.map(|p| {
+        p.replace("_contours.jpg", "_fastsam_masks.jpg")
+    });
+
+    // Convert source image to OpenCV Mat for debug overlay
+    let source_mat = if contour_debug_path.is_some() || masks_debug_path.is_some() {
+        let img_data: Vec<u8> = flattened_image.as_raw().clone();
+        let mat = Mat::from_slice(&img_data)?;
+        Some(mat.reshape(3, img_height)?.try_clone()?)
+    } else {
+        None
+    };
+
     let contours = process_fastsam_outputs(
         &outputs,
         img_width,
         img_height,
         input_size as i32,
         tag_regions,
-        debug_path,
+        contour_debug_path.as_deref(),
+        masks_debug_path.as_deref(),
+        source_mat.as_ref(),
     )?;
 
     Ok(contours)
@@ -752,25 +772,28 @@ fn segment_with_edges(
     Ok(filtered_contours)
 }
 
-/// Process FastSAM ONNX Runtime outputs to extract contours
+/// Process FastSAM ONNX Runtime outputs to extract contours from segmentation masks
 fn process_fastsam_outputs(
     outputs: &ort::session::SessionOutputs,
     img_width: i32,
     img_height: i32,
     input_size: i32,
     tag_regions: &[(i32, i32, i32, i32)],
-    _debug_path: Option<&str>,
+    contour_debug_path: Option<&str>,
+    masks_debug_path: Option<&str>,
+    source_image: Option<&Mat>,
 ) -> Result<Vec<Contour>> {
-    use ndarray::ArrayView3;
+    use ndarray::{ArrayView3, ArrayView4};
 
-    println!("Processing FastSAM ONNX Runtime outputs...");
+    println!("Processing FastSAM ONNX Runtime outputs with mask extraction...");
 
     // FastSAM outputs:
     // output0: shape [1, 37, N] - detections (4 bbox + 1 obj + 32 mask coeffs)
-    // output1: shape [1, 32, H, H] - mask prototypes
+    // output1: shape [1, 32, H, W] - mask prototypes
 
     let conf_threshold = 0.25f32;
     let nms_threshold = 0.45f32;
+    let mask_threshold = 0.5f32;
 
     // Extract detection tensor (output0)
     let det_value = &outputs[0];
@@ -780,24 +803,42 @@ fn process_fastsam_outputs(
 
     println!("Detections shape: {:?}", det_shape);
 
+    // Extract mask prototypes (output1)
+    let proto_value = &outputs[1];
+    let proto_tensor = proto_value.try_extract_tensor::<f32>()?;
+    let proto_shape = proto_tensor.0;
+    let proto_data = proto_tensor.1;
+
+    println!("Mask prototypes shape: {:?}", proto_shape);
+
     if det_shape.len() < 3 {
         anyhow::bail!("Expected 3D detections tensor, got {:?}", det_shape);
     }
 
-    // Create ArrayView from raw tensor [1, 37, N]
+    // Create ArrayViews
     let det_view = ArrayView3::from_shape(
         (det_shape[0] as usize, det_shape[1] as usize, det_shape[2] as usize),
         det_data,
     )?;
 
+    let proto_view = ArrayView4::from_shape(
+        (proto_shape[0] as usize, proto_shape[1] as usize, proto_shape[2] as usize, proto_shape[3] as usize),
+        proto_data,
+    )?;
+
     let num_detections = det_shape[2] as usize;
+    let proto_h = proto_shape[2] as usize;
+    let proto_w = proto_shape[3] as usize;
 
     println!("Processing {} potential detections", num_detections);
+    println!("Mask prototype size: {}x{}", proto_h, proto_w);
 
     // Collect detections above threshold
     struct Detection {
         bbox: (f32, f32, f32, f32), // x, y, w, h in image coordinates
         confidence: f32,
+        mask_coeffs: Vec<f32>, // 32 mask coefficients
+        det_idx: usize, // Original detection index
     }
 
     let mut detections_list = Vec::new();
@@ -817,9 +858,17 @@ fn process_fastsam_outputs(
         let objectness = det_view[[0, 4, i]];
 
         if objectness > conf_threshold {
+            // Extract 32 mask coefficients (indices 5-36)
+            let mut mask_coeffs = Vec::with_capacity(32);
+            for j in 0..32 {
+                mask_coeffs.push(det_view[[0, 5 + j, i]]);
+            }
+
             detections_list.push(Detection {
                 bbox: (cx, cy, w, h),
                 confidence: objectness,
+                mask_coeffs,
+                det_idx: i,
             });
         }
     }
@@ -872,13 +921,37 @@ fn process_fastsam_outputs(
 
     println!("After NMS: {} final detections", keep_indices.len());
 
-    // Convert to contours
+    // Create debug images if requested
+    // 1. Contour overlay on source image
+    let mut contour_debug_img = if contour_debug_path.is_some() {
+        if let Some(src) = source_image {
+            src.try_clone()?
+        } else {
+            Mat::default()
+        }
+    } else {
+        Mat::default()
+    };
+
+    // 2. Mask overlay showing segmentation regions
+    let mut masks_debug_img = if masks_debug_path.is_some() {
+        if let Some(src) = source_image {
+            src.try_clone()?
+        } else {
+            Mat::default()
+        }
+    } else {
+        Mat::default()
+    };
+
+    // Process each kept detection to generate masks and extract contours
     let mut contours_result = Vec::new();
+    let mut detection_count = 0;
 
     for &idx in &keep_indices {
         let det = &detections_list[idx];
 
-        println!("Processing detection: conf={:.2}", det.confidence);
+        println!("Processing detection {}: conf={:.2}", detection_count, det.confidence);
 
         // Convert to x1, y1, x2, y2
         let x1 = (det.bbox.0 - det.bbox.2 / 2.0).max(0.0) as i32;
@@ -908,25 +981,209 @@ fn process_fastsam_outputs(
             }
         }
 
-        if !overlaps_tag {
-            // Create contour from bounding box
-            let points = vec![
-                Point2DMm { x: x1 as f64, y: y1 as f64 },
-                Point2DMm { x: x2 as f64, y: y1 as f64 },
-                Point2DMm { x: x2 as f64, y: y2 as f64 },
-                Point2DMm { x: x1 as f64, y: y2 as f64 },
-            ];
+        if overlaps_tag {
+            println!("  Excluded: overlaps with AprilTag region");
+            continue;
+        }
+
+        // Generate segmentation mask from coefficients and prototypes
+        // Mask = sigmoid(sum(coeffs[i] * prototypes[i]))
+        let mut mask = vec![0.0f32; proto_h * proto_w];
+
+        for proto_idx in 0..32 {
+            let coeff = det.mask_coeffs[proto_idx];
+            for y in 0..proto_h {
+                for x in 0..proto_w {
+                    let proto_val = proto_view[[0, proto_idx, y, x]];
+                    mask[y * proto_w + x] += coeff * proto_val;
+                }
+            }
+        }
+
+        // Debug: Check mask values before sigmoid
+        let mask_min = mask.iter().copied().fold(f32::INFINITY, f32::min);
+        let mask_max = mask.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        println!("  Mask before sigmoid: min={:.3}, max={:.3}", mask_min, mask_max);
+
+        // Apply sigmoid activation
+        for val in mask.iter_mut() {
+            *val = 1.0 / (1.0 + (-*val).exp());
+        }
+
+        // Debug: Check mask values after sigmoid
+        let sig_min = mask.iter().copied().fold(f32::INFINITY, f32::min);
+        let sig_max = mask.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        println!("  Mask after sigmoid: min={:.3}, max={:.3}", sig_min, sig_max);
+
+        // Resize mask from proto_h x proto_w to full image size
+        let mask_mat_temp = Mat::from_slice(&mask)?;
+        let mask_mat = mask_mat_temp.reshape(1, proto_h as i32)?;
+        let mut resized_mask = Mat::default();
+        opencv::imgproc::resize(
+            &mask_mat,
+            &mut resized_mask,
+            opencv::core::Size::new(img_width, img_height),
+            0.0,
+            0.0,
+            opencv::imgproc::INTER_LINEAR,
+        )?;
+
+        // Debug: Check resized mask values
+        let mut min_val = 0.0;
+        let mut max_val = 0.0;
+        opencv::core::min_max_loc(
+            &resized_mask,
+            Some(&mut min_val),
+            Some(&mut max_val),
+            None,
+            None,
+            &Mat::default(),
+        )?;
+        println!("  Resized mask: min={:.3}, max={:.3}", min_val, max_val);
+
+        // Threshold mask to create binary mask (values are in [0,1] range)
+        let mut binary_mask = Mat::default();
+        opencv::imgproc::threshold(
+            &resized_mask,
+            &mut binary_mask,
+            mask_threshold as f64,  // Threshold directly since mask is in [0,1] range
+            1.0,                     // Max value is 1.0
+            opencv::imgproc::THRESH_BINARY,
+        )?;
+
+        // Count pixels above threshold
+        let nonzero = opencv::core::count_non_zero(&binary_mask)?;
+        println!("  Binary mask: {} pixels above threshold ({}%)",
+                 nonzero, (nonzero as f32 * 100.0) / (img_width * img_height) as f32);
+
+        // Convert to 8-bit for contour detection
+        let mut mask_8u = Mat::default();
+        binary_mask.convert_to(&mut mask_8u, opencv::core::CV_8U, 1.0, 0.0)?;
+
+        // Draw segmentation mask on mask debug image if requested
+        if masks_debug_path.is_some() {
+            // Generate a unique color for this detection (BGR format)
+            let color = Scalar::new(
+                ((detection_count * 70) % 256) as f64,
+                ((detection_count * 150) % 256) as f64,
+                ((detection_count * 230) % 256) as f64,
+                0.0,
+            );
+
+            // Create a colored overlay where mask is active
+            let mut colored_overlay = Mat::default();
+            masks_debug_img.try_clone()?.copy_to(&mut colored_overlay)?;
+
+            // Fill mask region with color using copyTo with mask
+            let mut color_mat = Mat::new_rows_cols_with_default(
+                img_height,
+                img_width,
+                opencv::core::CV_8UC3,
+                color,
+            )?;
+
+            // Blend colored region with original image (60% color, 40% original)
+            let mut temp = Mat::default();
+            opencv::core::add_weighted(
+                &color_mat,
+                0.6,
+                &colored_overlay,
+                0.4,
+                0.0,
+                &mut temp,
+                -1,
+            )?;
+
+            // Copy only the masked region to the debug image
+            temp.copy_to_masked(&mut masks_debug_img, &mask_8u)?;
+        }
+
+        // Find contours from binary mask
+        let mut mask_contours = Vector::<Vector<Point>>::new();
+        opencv::imgproc::find_contours(
+            &mask_8u,
+            &mut mask_contours,
+            RETR_EXTERNAL,
+            CHAIN_APPROX_SIMPLE,
+            Point::new(0, 0),
+        )?;
+
+        // Find the largest contour (main object)
+        let mut largest_contour_idx = None;
+        let mut largest_area = 0.0;
+
+        for i in 0..mask_contours.len() {
+            let contour = mask_contours.get(i)?;
+            let area = opencv::imgproc::contour_area(&contour, false)?;
+            if area > largest_area {
+                largest_area = area;
+                largest_contour_idx = Some(i);
+            }
+        }
+
+        if let Some(contour_idx) = largest_contour_idx {
+            let contour = mask_contours.get(contour_idx)?;
+
+            // Convert OpenCV contour to our Contour type
+            let mut points = Vec::new();
+            for j in 0..contour.len() {
+                let pt = contour.get(j)?;
+                points.push(Point2DMm {
+                    x: pt.x as f64,
+                    y: pt.y as f64,
+                });
+            }
+
+            println!("  Extracted contour with {} points, area={:.1} pixels", points.len(), largest_area);
 
             contours_result.push(Contour {
                 points,
                 closed: true,
             });
+
+            // Draw contour on contour debug image
+            if contour_debug_path.is_some() {
+                // Generate color for this detection
+                let color = Scalar::new(
+                    ((detection_count * 50) % 255) as f64,
+                    ((detection_count * 100) % 255) as f64,
+                    ((detection_count * 150) % 255) as f64,
+                    0.0,
+                );
+
+                let mut contour_vec: Vector<Vector<Point>> = Vector::new();
+                contour_vec.push(contour);
+                opencv::imgproc::draw_contours(
+                    &mut contour_debug_img,
+                    &contour_vec,
+                    0,
+                    color,
+                    2,
+                    opencv::imgproc::LINE_8,
+                    &Mat::default(),
+                    i32::MAX,
+                    Point::new(0, 0),
+                )?;
+            }
+
+            detection_count += 1;
         } else {
-            println!("  Excluded: overlaps with AprilTag region");
+            println!("  No valid contour found in mask");
         }
     }
 
-    println!("Returning {} contours", contours_result.len());
+    // Save debug images if requested
+    if let Some(path) = contour_debug_path {
+        imgcodecs::imwrite(path, &contour_debug_img, &Vector::new())?;
+        println!("Saved contour overlay to: {}", path);
+    }
+
+    if let Some(path) = masks_debug_path {
+        imgcodecs::imwrite(path, &masks_debug_img, &Vector::new())?;
+        println!("Saved segmentation masks overlay to: {}", path);
+    }
+
+    println!("Returning {} contours from segmentation masks", contours_result.len());
 
     Ok(contours_result)
 }
