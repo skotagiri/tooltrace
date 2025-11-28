@@ -1,3 +1,94 @@
+## 2025-11-27: YOLOv8 Segmentation + GPU Acceleration (In Progress)
+
+**Update**: Integrated ONNX Runtime with DirectML GPU acceleration for YOLOv8-based instance segmentation. This enables color-agnostic object detection (handles white tools on white paper) but requires proper ONNX model export.
+
+### GPU Acceleration Implementation
+
+1. **ONNX Runtime Integration**
+   - Added `ort = { version = "2.0.0-rc.10", features = ["directml"] }` dependency
+   - Replaced OpenCV DNN (which caused ACCESS_VIOLATION crashes on Windows)
+   - DirectML execution provider enables GPU acceleration on any DX12-compatible GPU
+   - Automatic CPU fallback if GPU unavailable
+
+2. **Session Configuration**
+   ```rust
+   let mut session = Session::builder()?
+       .with_execution_providers([
+           DirectMLExecutionProvider::default().build(),  // GPU
+       ])?
+       .with_intra_threads(4)?
+       .commit_from_file(model_path)?;
+   ```
+
+3. **Input Preprocessing**
+   - Resize image to 640×640 (YOLOv8 standard input)
+   - Convert to CHW format: [1, 3, 640, 640]
+   - Normalize pixels to [0, 1] range
+   - Create tensor using `TensorRef::from_array_view()` with ndarray
+
+4. **Build Success**
+   - Successfully compiled with ONNX Runtime + DirectML
+   - GPU session creation works without errors
+
+### Current Status: Model Format Issue
+
+**Problem**: Downloaded ONNX models export with multi-scale outputs instead of simplified format.
+
+**Expected YOLOv8-seg outputs:**
+- `output0`: `[1, 116, 8400]` - detections (4 bbox + 80 classes + 32 mask coeffs)
+- `output1`: `[1, 32, 160, 160]` - mask prototypes
+
+**Actual model outputs** (both yolov8n-seg.onnx and yolov8n-seg-proper.onnx):
+- 7 tensors with multi-scale feature maps:
+  - `output1`: `[1, 32, 160, 160]` - mask prototypes
+  - `/model.22/Concat_1_output_0`: `[1, 144, 80, 80]` - feature map at 80×80
+  - `/model.22/cv4.0/cv4.0.2/Conv_output_0`: `[1, 32, 80, 80]` - mask coeffs at 80×80
+  - `/model.22/cv4.1/cv4.1.2/Conv_output_0`: `[1, 32, 40, 40]` - mask coeffs at 40×40
+  - `/model.22/cv4.2/cv4.2.2/Conv_output_0`: `[1, 32, 20, 20]` - mask coeffs at 20×20
+  - `/model.22/Concat_2_output_0`: `[1, 144, 40, 40]` - feature map at 40×40
+  - `/model.22/Concat_3_output_0`: `[1, 144, 20, 20]` - feature map at 20×20
+
+**Root Cause**: Models exported without `simplify=True` option, which would merge multi-scale outputs into single tensors.
+
+**Solution Needed**: Export YOLOv8-seg with:
+```python
+from ultralytics import YOLO
+model = YOLO("yolov8n-seg.pt")
+model.export(format="onnx", imgsz=640, simplify=True)
+```
+
+**Blocker**: Python environment has numpy compilation errors (complex float type issue with Python 3.14), preventing ultralytics installation and proper model export.
+
+### Code Architecture
+
+**File**: `tooltrace/src/segmentation.rs`
+- Lines 34-106: `segment_with_yolov8()` - Main YOLOv8 inference function
+  - ONNX Runtime session with DirectML
+  - Input preprocessing (resize, normalize, CHW conversion)
+  - Inference execution
+- Lines 109-283: `process_yolov8_onnx_outputs()` - Post-processing (incomplete)
+  - Designed for standard [1, 116, 8400] output format
+  - Currently receives [1, 32, 160, 160] instead
+  - Needs multi-scale output handling for current model format
+- Lines 285-310: `calculate_iou()` - IoU calculation for NMS
+
+### Resources
+
+- [ExecutionProvider Documentation](https://docs.rs/ort/2.0.0-rc.7/ort/trait.ExecutionProvider.html)
+- [DirectML Execution Provider](https://ort.pyke.io/perf/execution-providers)
+- [YOLOv8-seg Output Explanation (GitHub Issue #14765)](https://github.com/ultralytics/ultralytics/issues/14765)
+- [YOLOv8 Segmentation Guide (Medium)](https://medium.com/@jackpiroler/overcoming-export-challenges-for-onnx-model-and-mask-extraction-b9507935d7e2)
+
+### Next Steps
+
+1. Resolve Python/numpy build environment to install ultralytics
+2. Export YOLOv8-seg.onnx with `simplify=True`
+3. Implement full post-processing for standard output format
+4. Compare GPU vs CPU inference performance
+5. Test with tool images on white paper
+
+---
+
 ## 2025-11-27: Enhanced for Tool Storage Plate Generation
 
 **Update**: Optimized segmentation for tool storage plate applications with AprilTag exclusion and sensitive edge detection.

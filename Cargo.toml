@@ -21,7 +21,7 @@ image = "0.25"
 imageproc = "0.25"
 
 # Computer vision
-opencv = { version = "0.97.2", default-features = false, features = ["calib3d", "imgproc", "imgcodecs"] }
+opencv = { version = "0.97.2", default-features = false, features = ["calib3d", "imgproc", "imgcodecs", "dnn"] }
 # apriltag = { version = "0.3", features = ["nalgebra", "image"] }
 kornia-rs = "0.1"
 kornia-image = "0.1"
@@ -45,6 +45,11 @@ contour_tracing = "1.0"
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
+
+# ONNX Runtime for DNN inference
+# DirectML for GPU acceleration on Windows (any DX12 GPU)
+ort = { version = "2.0.0-rc.10", features = ["directml"] }
+ndarray = "0.16"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

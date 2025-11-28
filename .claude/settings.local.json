@@ -31,7 +31,8 @@
       "Bash(export PATH=\"$PATH:/d/opencv/opencv/build/x64/vc16/bin\")",
       "Bash(export OPENCV_LINK_LIBS=\"opencv_world4100\")",
       "Bash(./LLVM-19.1.5-win64.exe /S /D=\"D:\\LLVM\")",
-      "Bash(winget:*)"
+      "Bash(winget:*)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []
