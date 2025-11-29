@@ -1,0 +1,1 @@
+- For next steps, we will use d:\data\updated.jpeg as input picture.

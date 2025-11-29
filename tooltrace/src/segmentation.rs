@@ -896,3 +896,302 @@ pub fn pixels_to_mm(contours: Vec<Contour>, dpi: f64) -> Vec<Contour> {
         }
     }).collect()
 }
+
+/// Filter contours to keep only the best object contour using smart scoring
+/// Considers area, centrality, compactness, and edge proximity
+/// Returns a vector with at most one contour (the best object)
+pub fn filter_largest_contour(
+    contours: Vec<Contour>,
+    debug_path: Option<&str>,
+    source_image: &RgbImage,
+) -> Result<Vec<Contour>> {
+    if contours.is_empty() {
+        println!("No contours to filter");
+        return Ok(vec![]);
+    }
+
+    if contours.len() == 1 {
+        println!("Only one contour, keeping it");
+        return Ok(contours);
+    }
+
+    println!("Filtering {} contours using smart object scoring...", contours.len());
+
+    let img_width = source_image.width() as f64;
+    let img_height = source_image.height() as f64;
+    let img_center_x = img_width / 2.0;
+    let img_center_y = img_height / 2.0;
+
+    // Calculate scores for each contour
+    let mut contour_scores: Vec<(usize, f64, ContourMetrics)> = Vec::new();
+
+    for (idx, contour) in contours.iter().enumerate() {
+        let metrics = calculate_contour_metrics(&contour.points, img_width, img_height);
+
+        // Calculate composite score
+        let area_score = calculate_area_score(metrics.area, img_width * img_height);
+        let centrality_score = calculate_centrality_score(
+            metrics.centroid_x,
+            metrics.centroid_y,
+            img_center_x,
+            img_center_y,
+            img_width,
+            img_height
+        );
+        let compactness_score = metrics.compactness;
+        let edge_proximity_score = calculate_edge_proximity_score(
+            &metrics.bbox,
+            img_width,
+            img_height
+        );
+
+        // Filter out highly irregular contours (paper edges/creases have very low compactness)
+        if metrics.compactness < 0.15 {
+            // Skip this contour - too irregular, likely paper edge/crease/shadow
+            println!("    REJECTED: compactness too low ({:.3}), likely paper artifact", metrics.compactness);
+            continue;
+        }
+
+        // Weighted composite score (tuned for tool/object detection)
+        // Heavy emphasis on compactness to reject paper edges/creases
+        let total_score =
+            area_score * 0.15 +           // Area is less important when we have shape info
+            centrality_score * 0.25 +     // Centered objects are preferred
+            compactness_score * 0.50 +    // STRONG preference for compact shapes (rejects paper edges)
+            edge_proximity_score * 0.10;  // Penalize contours near image edges
+
+        contour_scores.push((idx, total_score, metrics));
+
+        println!("  Contour {}: area={:.1}px², center=({:.0},{:.0}), compact={:.3}, edge_dist={:.1}px, SCORE={:.3}",
+            idx, metrics.area, metrics.centroid_x, metrics.centroid_y,
+            metrics.compactness, edge_proximity_score, total_score);
+    }
+
+    // Find the best scoring contour
+    let (best_idx, best_score, best_metrics) = contour_scores
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .unwrap();
+
+    println!("Best contour: index {} with score {:.3} (area={:.1}px², center=({:.0},{:.0}))",
+        best_idx, best_score, best_metrics.area, best_metrics.centroid_x, best_metrics.centroid_y);
+
+    // Save debug visualization if requested
+    if let Some(path) = debug_path {
+        save_best_contour_debug(&contours, *best_idx, source_image, path)?;
+    }
+
+    // Return only the best contour
+    Ok(vec![contours[*best_idx].clone()])
+}
+
+/// Metrics for evaluating contour quality
+#[derive(Clone, Copy)]
+struct ContourMetrics {
+    area: f64,
+    perimeter: f64,
+    compactness: f64,  // Circularity measure: 4π * area / perimeter²
+    centroid_x: f64,
+    centroid_y: f64,
+    bbox: (f64, f64, f64, f64),  // min_x, min_y, max_x, max_y
+}
+
+/// Calculate comprehensive metrics for a contour
+fn calculate_contour_metrics(points: &[Point2DMm], img_width: f64, img_height: f64) -> ContourMetrics {
+    if points.len() < 3 {
+        return ContourMetrics {
+            area: 0.0,
+            perimeter: 0.0,
+            compactness: 0.0,
+            centroid_x: img_width / 2.0,
+            centroid_y: img_height / 2.0,
+            bbox: (0.0, 0.0, 0.0, 0.0),
+        };
+    }
+
+    // Calculate area using shoelace formula
+    let area = calculate_contour_area(points);
+
+    // Calculate perimeter
+    let mut perimeter = 0.0;
+    let n = points.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let dx = points[j].x - points[i].x;
+        let dy = points[j].y - points[i].y;
+        perimeter += (dx * dx + dy * dy).sqrt();
+    }
+
+    // Calculate compactness (circularity): 4π * area / perimeter²
+    // Perfect circle = 1.0, elongated shapes < 1.0
+    let compactness = if perimeter > 0.0 {
+        (4.0 * std::f64::consts::PI * area) / (perimeter * perimeter)
+    } else {
+        0.0
+    };
+
+    // Calculate centroid
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    for point in points {
+        cx += point.x;
+        cy += point.y;
+    }
+    cx /= points.len() as f64;
+    cy /= points.len() as f64;
+
+    // Calculate bounding box
+    let min_x = points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+    let min_y = points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+    let max_x = points.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = points.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+
+    ContourMetrics {
+        area,
+        perimeter,
+        compactness,
+        centroid_x: cx,
+        centroid_y: cy,
+        bbox: (min_x, min_y, max_x, max_y),
+    }
+}
+
+/// Score based on area relative to image size
+/// Prefer moderate-sized objects (not too small, not too large like full paper)
+fn calculate_area_score(area: f64, image_area: f64) -> f64 {
+    let ratio = area / image_area;
+
+    // Ideal object size: 5-40% of image
+    // Score peaks around 15-20% of image area
+    if ratio < 0.001 {
+        0.0  // Too small (noise)
+    } else if ratio < 0.05 {
+        ratio / 0.05  // Linearly increase from 0 to 1
+    } else if ratio <= 0.40 {
+        1.0  // Ideal range
+    } else if ratio < 0.70 {
+        1.0 - (ratio - 0.40) / 0.30  // Penalize large areas (likely paper/background)
+    } else {
+        0.1  // Heavily penalize very large areas (definitely background)
+    }
+}
+
+/// Score based on distance from image center
+/// Prefer centered objects over edge objects
+fn calculate_centrality_score(
+    cx: f64,
+    cy: f64,
+    img_cx: f64,
+    img_cy: f64,
+    img_width: f64,
+    img_height: f64,
+) -> f64 {
+    let dx = (cx - img_cx).abs();
+    let dy = (cy - img_cy).abs();
+    let max_dist = ((img_width / 2.0).powi(2) + (img_height / 2.0).powi(2)).sqrt();
+    let dist = (dx * dx + dy * dy).sqrt();
+
+    // Score decreases with distance from center
+    (1.0 - (dist / max_dist)).max(0.0)
+}
+
+/// Score based on proximity to image edges
+/// Penalize contours very close to edges (likely paper boundaries)
+fn calculate_edge_proximity_score(
+    bbox: &(f64, f64, f64, f64),
+    img_width: f64,
+    img_height: f64,
+) -> f64 {
+    let (min_x, min_y, max_x, max_y) = *bbox;
+
+    // Calculate minimum distance to any edge
+    let dist_left = min_x;
+    let dist_top = min_y;
+    let dist_right = img_width - max_x;
+    let dist_bottom = img_height - max_y;
+
+    let min_edge_dist = dist_left.min(dist_top).min(dist_right).min(dist_bottom);
+
+    // If contour is within 5% of image dimension from edge, heavily penalize
+    let edge_threshold = (img_width.min(img_height)) * 0.05;
+
+    if min_edge_dist < edge_threshold {
+        0.0  // Very close to edge, likely paper boundary
+    } else if min_edge_dist < edge_threshold * 3.0 {
+        min_edge_dist / (edge_threshold * 3.0)  // Gradually increase score
+    } else {
+        1.0  // Far from edges, good
+    }
+}
+
+/// Calculate the area of a contour using the shoelace formula
+fn calculate_contour_area(points: &[Point2DMm]) -> f64 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+
+    let mut area = 0.0;
+    let n = points.len();
+
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area += points[i].x * points[j].y;
+        area -= points[j].x * points[i].y;
+    }
+
+    (area / 2.0).abs()
+}
+
+/// Save debug image showing all contours with the best one highlighted
+fn save_best_contour_debug(
+    contours: &[Contour],
+    best_idx: usize,
+    source_image: &RgbImage,
+    path: &str,
+) -> Result<()> {
+    use opencv::core::{Mat, Point, Scalar, Vector};
+    use opencv::imgcodecs;
+
+    // Convert source image to OpenCV Mat
+    let img_data: Vec<u8> = source_image.as_raw().clone();
+    let mat = Mat::from_slice(&img_data)?;
+    let reshaped = mat.reshape(3, source_image.height() as i32)?;
+    let mut debug_img = reshaped.try_clone()?;
+
+    // Draw all contours in gray
+    for (idx, contour) in contours.iter().enumerate() {
+        let color = if idx == best_idx {
+            Scalar::new(0.0, 255.0, 0.0, 0.0) // Green for best
+        } else {
+            Scalar::new(128.0, 128.0, 128.0, 0.0) // Gray for others
+        };
+
+        let thickness = if idx == best_idx { 3 } else { 1 };
+
+        // Convert to OpenCV format
+        let mut opencv_contour: Vector<Point> = Vector::new();
+        for pt in &contour.points {
+            opencv_contour.push(Point::new(pt.x as i32, pt.y as i32));
+        }
+
+        let mut contour_vec: Vector<Vector<Point>> = Vector::new();
+        contour_vec.push(opencv_contour);
+
+        opencv::imgproc::draw_contours(
+            &mut debug_img,
+            &contour_vec,
+            0,
+            color,
+            thickness,
+            opencv::imgproc::LINE_8,
+            &Mat::default(),
+            i32::MAX,
+            Point::new(0, 0),
+        )?;
+    }
+
+    imgcodecs::imwrite(path, &debug_img, &Vector::new())?;
+    println!("Saved best contour debug image to: {}", path);
+
+    Ok(())
+}

@@ -8,6 +8,7 @@ mod segmentation;
 mod tracing;
 mod export_svg;
 mod export_dxf;
+mod smoothing;
 
 /// Analyze photographs of objects on calibration paper and generate vector traces
 #[derive(Parser, Debug)]
@@ -162,15 +163,59 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Step 5: Convert pixel coordinates to millimeters
-    println!("\nStep 5: Converting coordinates to millimeters...");
+    println!("Found {} contour(s) in total", contours_pixels.len());
+
+    // Step 5a: Export multi-color SVG with all contours (debug visualization)
+    if args.debug && contours_pixels.len() > 1 {
+        println!("\nStep 5a: Exporting multi-color debug SVG with all contours...");
+        let dpi = 300.0;
+        let all_contours_mm = segmentation::pixels_to_mm(contours_pixels.clone(), dpi);
+        let multicolor_svg_path = format!("{}_all_contours_multicolor.svg", args.output);
+        export_svg::export_svg_multi_color(&all_contours_mm, &multicolor_svg_path)?;
+    }
+
+    // Step 5b: Filter to largest contour only
+    println!("\nStep 5b: Filtering to largest contour...");
+    let largest_debug_path = if args.debug {
+        Some(format!("{}_largest_contour.jpg", args.output))
+    } else {
+        None
+    };
+    let largest_contour_pixels = segmentation::filter_largest_contour(
+        contours_pixels,
+        largest_debug_path.as_deref(),
+        &flattened,
+    )?;
+
+    if largest_contour_pixels.is_empty() {
+        println!("\nNo valid contour after filtering.");
+        return Ok(());
+    }
+
+    // Step 5c: Apply spline smoothing to create gentle low-frequency curves
+    println!("\nStep 5c: Applying spline smoothing...");
+    let decimation_factor = 5; // Keep every 5th point for low-frequency representation
+    let smoothing_debug_path = if args.debug {
+        Some(format!("{}_smoothed.jpg", args.output))
+    } else {
+        None
+    };
+    let smoothed_contours = smoothing::apply_spline_smoothing(
+        largest_contour_pixels,
+        decimation_factor,
+        smoothing_debug_path.as_deref(),
+        Some(&flattened),
+    )?;
+
+    // Step 6: Convert pixel coordinates to millimeters
+    println!("\nStep 6: Converting coordinates to millimeters...");
     let dpi = 300.0; // Flattened image is at 300 DPI
-    let contours_mm = segmentation::pixels_to_mm(contours_pixels, dpi);
+    let contours_mm = segmentation::pixels_to_mm(smoothed_contours, dpi);
 
-    println!("Converted {} contour(s) to millimeter coordinates", contours_mm.len());
+    println!("Final result: {} smoothed contour(s) in millimeter coordinates", contours_mm.len());
 
-    // Step 6: Export to vector format(s)
-    println!("\nStep 6: Exporting to vector format(s)...");
+    // Step 7: Export to vector format(s)
+    println!("\nStep 7: Exporting to vector format(s)...");
     let format = OutputFormat::from(args.format);
 
     match format {

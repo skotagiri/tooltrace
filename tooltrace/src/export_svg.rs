@@ -6,9 +6,20 @@ use std::fs::File;
 use std::io::Write;
 use tooltrace_common::Contour;
 
-/// Export contours to SVG file
+/// Export contours to SVG file with multi-color support
 /// Coordinates are in millimeters
+/// If multi_color is true, each contour gets a unique color
 pub fn export_svg(contours: &[Contour], output_path: &str) -> Result<()> {
+    export_svg_with_options(contours, output_path, false)
+}
+
+/// Export contours to SVG file with multi-color option
+pub fn export_svg_multi_color(contours: &[Contour], output_path: &str) -> Result<()> {
+    export_svg_with_options(contours, output_path, true)
+}
+
+/// Export contours to SVG file with customizable color options
+fn export_svg_with_options(contours: &[Contour], output_path: &str, multi_color: bool) -> Result<()> {
     let mut file = File::create(output_path)?;
 
     // Calculate bounding box
@@ -28,14 +39,26 @@ pub fn export_svg(contours: &[Contour], output_path: &str) -> Result<()> {
     writeln!(file, r#"  <desc>Traced object contour from calibration paper photo. Units: millimeters</desc>"#)?;
     writeln!(file)?;
 
+    // Define color palette for multi-color mode
+    let colors = [
+        "#FF0000", "#00FF00", "#0000FF", "#FF00FF", "#00FFFF", "#FFFF00",
+        "#FF8000", "#8000FF", "#00FF80", "#FF0080", "#80FF00", "#0080FF",
+    ];
+
     // Export each contour as a path
     for (idx, contour) in contours.iter().enumerate() {
         if contour.points.is_empty() {
             continue;
         }
 
+        let stroke_color = if multi_color {
+            colors[idx % colors.len()]
+        } else {
+            "black"
+        };
+
         write!(file, r#"  <path id="contour-{}" "#, idx)?;
-        write!(file, r#"stroke="black" stroke-width="0.1" fill="none" "#)?;
+        write!(file, r#"stroke="{}" stroke-width="0.1" fill="none" "#, stroke_color)?;
         write!(file, r#"d=""#)?;
 
         // Move to first point
@@ -60,6 +83,9 @@ pub fn export_svg(contours: &[Contour], output_path: &str) -> Result<()> {
 
     println!("Exported {} contour(s) to SVG: {}", contours.len(), output_path);
     println!("  Bounds: {:.1}mm × {:.1}mm", width, height);
+    if multi_color {
+        println!("  Mode: Multi-color (each contour has a unique color)");
+    }
 
     Ok(())
 }

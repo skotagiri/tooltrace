@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(d:/vcpkg/vcpkg.exe list:*)",
+      "Bash($env:VCPKG_ROOT=\"d:\\vcpkg\")",
+      "Bash(VCPKG_ROOT=\"d:/vcpkg\" cargo build:*)",
+      "Bash(cargo tree:*)",
+      "Bash(d:/vcpkg/vcpkg.exe integrate:*)",
+      "Bash(export VCPKG_ROOT=\"d:/vcpkg\")",
+      "Bash(export OPENCV_LINK_PATHS=\"d:/vcpkg/installed/x64-windows/lib\")",
+      "Bash(export OPENCV_INCLUDE_PATHS=\"d:/vcpkg/installed/x64-windows/include\")",
+      "Bash(export OpenCV_DIR=\"d:/vcpkg/installed/x64-windows/share/opencv4\")",
+      "Bash(export CMAKE_PREFIX_PATH=\"d:/vcpkg/installed/x64-windows\")",
+      "Bash(cargo run:*)",
+      "Bash(export PATH=\"d:/vcpkg/installed/x64-windows/bin:$PATH\")",
+      "Bash(./target/release/tooltrace.exe:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
